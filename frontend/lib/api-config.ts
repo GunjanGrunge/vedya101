@@ -35,6 +35,35 @@ export const API_ENDPOINTS = {
   onboardingData: (clerkId: string) => `${API_BASE_URL}/users/onboarding-data?clerk_user_id=${encodeURIComponent(clerkId)}`,
   onboardingSave: `${API_BASE_URL}/users/onboarding`,
   planReadyMessage: `${API_BASE_URL}/settings/plan-ready-message`,
+
+  // Admin (requires admin email)
+  adminCheck: (clerkId: string) => `${API_BASE_URL}/admin/check?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminUsers: (clerkId: string) => `${API_BASE_URL}/admin/users?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminLearningPlans: (clerkId: string) => `${API_BASE_URL}/admin/learning-plans?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminChatSessions: (clerkId: string) => `${API_BASE_URL}/admin/chat-sessions?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminDeleteUser: (userId: string, clerkId: string) => `${API_BASE_URL}/admin/users/${encodeURIComponent(userId)}?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminDeleteLearningPlan: (planId: string, clerkId: string) => `${API_BASE_URL}/admin/learning-plans/${encodeURIComponent(planId)}?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminDeleteChatSession: (sessionId: string, clerkId: string) => `${API_BASE_URL}/admin/chat-sessions/${encodeURIComponent(sessionId)}?clerk_user_id=${encodeURIComponent(clerkId)}`,
+
+  // Live sessions
+  liveCurrent: `${API_BASE_URL}/live/current`,
+  adminLiveStart: `${API_BASE_URL}/admin/live/start`,
+  adminLiveStop: `${API_BASE_URL}/admin/live/stop`,
+
+  // Achievements
+  achievements: `${API_BASE_URL}/achievements`,
+  userAchievements: (clerkId: string) => `${API_BASE_URL}/user/achievements?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  adminGrantAchievement: `${API_BASE_URL}/admin/achievements/grant`,
+} as const
+
+// WebSocket base URL (ws or wss from API URL)
+export const WS_BASE_URL = (typeof window !== 'undefined'
+  ? (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^http/, 'ws')
+  : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^http/, 'ws'))
+
+export const WS_ENDPOINTS = {
+  live: (sessionId: string, clerkUserId: string, userName: string, isAdmin: boolean) =>
+    `${WS_BASE_URL}/ws/live?session_id=${encodeURIComponent(sessionId)}&clerk_user_id=${encodeURIComponent(clerkUserId)}&user_name=${encodeURIComponent(userName)}&is_admin=${isAdmin}`,
 } as const
 
 export { API_BASE_URL }

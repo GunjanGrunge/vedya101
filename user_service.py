@@ -841,10 +841,21 @@ class UserService:
             logger.error("Failed to delete learning plan: %s", e)
             return False
 
+    async def _ensure_app_settings_table(self, conn) -> None:
+        """Create app_settings table if it does not exist."""
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+
     async def get_app_setting(self, key: str) -> Optional[str]:
         """Get an app-wide setting value by key. Returns None if not set."""
         try:
             conn = await self.get_db_connection()
+            await self._ensure_app_settings_table(conn)
             row = await conn.fetchrow("SELECT value FROM app_settings WHERE key = $1", key)
             await conn.close()
             return row["value"] if row and row.get("value") is not None else None
@@ -856,6 +867,7 @@ class UserService:
         """Set an app-wide setting. Returns True on success."""
         try:
             conn = await self.get_db_connection()
+            await self._ensure_app_settings_table(conn)
             await conn.execute(
                 """
                 INSERT INTO app_settings (key, value, updated_at)
@@ -890,6 +902,272 @@ class UserService:
         except Exception as e:
             logger.error(f"Failed to get users for notifications: {str(e)}")
             return []
+
+    # --- Admin: full control over all users' data ---
+
+    async def list_all_users_admin(self) -> list:
+        """List all users (for admin). Returns id, clerk_user_id, email, name, created_at."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch("""
+                SELECT id, clerk_user_id, email, name, created_at
+                FROM users
+                ORDER BY created_at DESC
+            """)
+            await conn.close()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "clerk_user_id": r.get("clerk_user_id"),
+                    "email": r.get("email") or "",
+                    "name": r.get("name") or "",
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list all users (admin): {e}")
+            return []
+
+    async def list_all_learning_plans_admin(self) -> list:
+        """List all learning plans with owner email/name (for admin)."""
+        try:
+            conn = await self.get_db_connection()
+            await self._ensure_learning_plans_table(conn)
+            rows = await conn.fetch("""
+                SELECT lp.id, lp.user_id, lp.title, lp.summary, lp.status, lp.created_at,
+                       COALESCE(lp.time_spent_minutes, 0) AS time_spent_minutes,
+                       COALESCE(lp.overall_progress, 0) AS overall_progress,
+                       u.email AS user_email, u.name AS user_name
+                FROM learning_plans lp
+                JOIN users u ON u.id = lp.user_id
+                ORDER BY lp.created_at DESC
+                LIMIT 500
+            """)
+            await conn.close()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "user_id": str(r["user_id"]),
+                    "user_email": r.get("user_email") or "",
+                    "user_name": r.get("user_name") or "",
+                    "title": r.get("title") or "Learning Plan",
+                    "summary": (r.get("summary") or "")[:200],
+                    "status": r.get("status") or "active",
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                    "time_spent_minutes": int(r.get("time_spent_minutes") or 0),
+                    "overall_progress": int(r.get("overall_progress") or 0),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list all learning plans (admin): {e}")
+            return []
+
+    async def list_all_chat_conversations_admin(self) -> list:
+        """List all chat conversations with owner email (for admin)."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch("""
+                SELECT c.id, c.user_id, c.created_at, c.updated_at,
+                       u.email AS user_email, u.name AS user_name,
+                       (SELECT LEFT(TRIM(m.content), 80) FROM chat_messages m
+                        WHERE m.conversation_id = c.id ORDER BY m.created_at ASC LIMIT 1) AS topic
+                FROM chat_conversations c
+                JOIN users u ON u.id = c.user_id
+                ORDER BY c.updated_at DESC NULLS LAST
+                LIMIT 500
+            """)
+            await conn.close()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "user_id": str(r["user_id"]),
+                    "user_email": r.get("user_email") or "",
+                    "user_name": r.get("user_name") or "",
+                    "topic": (r.get("topic") or "").strip() or "Chat",
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                    "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list all chat conversations (admin): {e}")
+            return []
+
+    async def delete_user_by_id_admin(self, user_id: str) -> bool:
+        """Delete a user and all related data (cascade). Admin only."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute("DELETE FROM users WHERE id = $1::uuid", user_id)
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete user (admin): {e}")
+            return False
+
+    async def delete_learning_plan_by_id_admin(self, plan_id: str) -> bool:
+        """Delete any learning plan by id. Admin only."""
+        try:
+            conn = await self.get_db_connection()
+            result = await conn.execute("DELETE FROM learning_plans WHERE id = $1::uuid", plan_id)
+            await conn.close()
+            return result and "DELETE 1" in result
+        except Exception as e:
+            logger.error(f"Failed to delete learning plan (admin): {e}")
+            return False
+
+
+    async def delete_chat_conversation_by_id_admin(self, conversation_id: str) -> bool:
+        """Delete any chat conversation and its messages. Admin only."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute("DELETE FROM chat_messages WHERE conversation_id = $1::uuid", conversation_id)
+            result = await conn.execute("DELETE FROM chat_conversations WHERE id = $1::uuid", conversation_id)
+            await conn.close()
+            return result and "DELETE 1" in result
+        except Exception as e:
+            logger.error(f"Failed to delete chat conversation (admin): {e}")
+            return False
+
+    # === ACHIEVEMENTS SYSTEM ===
+
+    async def get_all_achievements(self) -> list:
+        """Get all defined achievements."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch("SELECT * FROM achievements ORDER BY created_at ASC")
+            await conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Failed to get achievements: {e}")
+            return []
+
+    async def get_user_achievements(self, clerk_user_id: str) -> list:
+        """Get achievements earned by the user."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user:
+                return []
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT a.*, ua.earned_at
+                FROM achievements a
+                JOIN user_achievements ua ON a.id = ua.achievement_id
+                WHERE ua.user_id = $1
+                """,
+                user["id"]
+            )
+            await conn.close()
+            return [
+                {
+                    **dict(r),
+                    "earned_at": r["earned_at"].isoformat() if r["earned_at"] else None
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get user achievements: {e}")
+            return []
+
+    async def grant_achievement(self, clerk_user_id: str, slug: str) -> bool:
+        """Grant an achievement to a user by slug. Returns True if newly granted."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user:
+                return False
+            conn = await self.get_db_connection()
+            
+            # Get achievement ID
+            ach = await conn.fetchrow("SELECT id FROM achievements WHERE slug = $1", slug)
+            if not ach:
+                await conn.close()
+                return False
+            
+            # Insert if not exists
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO user_achievements (user_id, achievement_id, earned_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    user["id"], ach["id"]
+                )
+                await conn.close()
+                return True
+            except Exception:
+                await conn.close()
+                return False
+        except Exception as e:
+            logger.error(f"Failed to grant achievement: {e}")
+            return False
+
+    async def grant_achievement_by_email(self, email: str, slug: str) -> bool:
+        """Admin helper: grant achievement by email."""
+        try:
+            user = await self.get_user_by_email(email)
+            if not user:
+                return False
+            
+            conn = await self.get_db_connection()
+            ach = await conn.fetchrow("SELECT id FROM achievements WHERE slug = $1", slug)
+            if not ach:
+                await conn.close()
+                return False
+            
+            await conn.execute(
+                """
+                INSERT INTO user_achievements (user_id, achievement_id, earned_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id, achievement_id) DO NOTHING
+                """,
+                user["id"], ach["id"]
+            )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to grant achievement by email: {e}")
+            return False
+
+    async def check_achievements(self, clerk_user_id: str):
+        """
+        Check and award standard achievements based on user progress.
+        """
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user:
+                return
+
+            conn = await self.get_db_connection()
+            
+            # 1. Check Learning Plans count (proxy for modules)
+            plan_count = await conn.fetchval("SELECT COUNT(*) FROM learning_plans WHERE user_id = $1", user["id"])
+            
+            # 2. Check Completed Plans count
+            completed_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM learning_plans WHERE user_id = $1 AND (status = 'completed' OR overall_progress = 100)", 
+                user["id"]
+            )
+            
+            await conn.close()
+            
+            awards = []
+            if plan_count >= 1: awards.append('iron-scholar')
+            if plan_count >= 5: awards.append('bronze-learner')
+            if plan_count >= 10: awards.append('silver-student')
+            
+            if completed_count >= 1: awards.append('gold-graduate')
+            if completed_count >= 5: awards.append('platinum-pro')
+
+            # Grant
+            for slug in awards:
+                await self.grant_achievement(clerk_user_id, slug)
+                
+        except Exception as e:
+            logger.error(f"Error checking achievements: {e}")
+
 
 # Example usage and testing
 async def test_user_service():

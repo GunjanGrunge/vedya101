@@ -4,7 +4,7 @@ VEDYA API Server
 FastAPI server to serve the LangGraph agent system to the frontend
 """
 
-from fastapi import FastAPI, HTTPException, Header, Body
+from fastapi import FastAPI, HTTPException, Header, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
@@ -51,6 +51,14 @@ app.add_middleware(
 agent_system = None
 user_service = None
 user_sessions = {}  # Simple in-memory session storage
+
+# Admin: only this email can access /admin/* and see admin dashboard
+ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or "souvikbasu098@gmail.com").strip().lower()
+
+# Live session WebSocket rooms: session_id -> { delay_seconds, muted set, kicked set, connections list }
+# Each connection: { "ws": WebSocket, "clerk_user_id": str, "user_name": str, "is_admin": bool }
+_live_rooms: Dict[str, Dict[str, Any]] = {}
+_live_rooms_lock = asyncio.Lock()
 
 class ChatMessage(BaseModel):
     message: str
@@ -569,6 +577,336 @@ async def set_plan_ready_message(payload: PlanReadyMessageUpdate):
         raise HTTPException(status_code=500, detail="Failed to save setting")
     return {"success": True, "value": (payload.value or "").strip()}
 
+
+# ---------- Live sessions (admin hosts; all users can view /dashboard/live) ----------
+@app.get("/live/current")
+async def get_current_live_session():
+    """Get the current live session state (public)."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    raw = await user_service.get_app_setting("live_session_state")
+    if not raw:
+        return {"active": False}
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(data, dict):
+            return {"active": False}
+        return data
+    except Exception:
+        return {"active": False}
+
+
+class LiveSessionStartPayload(BaseModel):
+    clerk_user_id: str
+    title: str
+    description: Optional[str] = None
+    join_url: Optional[str] = None
+
+
+@app.post("/admin/live/start")
+async def admin_live_start(payload: LiveSessionStartPayload):
+    """Admin: start a live session (saved in DB app_settings)."""
+    await _require_admin(payload.clerk_user_id, None)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    session_id = str(uuid.uuid4())
+    state = {
+        "active": True,
+        "session_id": session_id,
+        "title": title[:140],
+        "description": (payload.description or "").strip()[:2000],
+        "join_url": (payload.join_url or "").strip()[:2000] or None,
+        "started_at": datetime.now().isoformat(),
+    }
+    ok = await user_service.set_app_setting("live_session_state", json.dumps(state))
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to start live session")
+    return {"success": True, "live": state}
+
+
+class LiveSessionStopPayload(BaseModel):
+    clerk_user_id: str
+
+
+@app.post("/admin/live/stop")
+async def admin_live_stop(payload: LiveSessionStopPayload):
+    """Admin: stop the current live session and close all WebSocket connections."""
+    await _require_admin(payload.clerk_user_id, None)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    raw = await user_service.get_app_setting("live_session_state")
+    session_id = None
+    connections_to_close = []
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            session_id = data.get("session_id") if isinstance(data, dict) else None
+        except Exception:
+            pass
+    async with _live_rooms_lock:
+        if session_id and session_id in _live_rooms:
+            room = _live_rooms[session_id]
+            # Copy connections and clear room under lock, but close sockets after releasing lock
+            connections_to_close = list(room.get("connections") or [])
+            del _live_rooms[session_id]
+
+    # Now, outside the lock, notify and close all websockets
+    for conn in connections_to_close:
+        try:
+            await conn["ws"].send_json({"type": "session_ended"})
+            await conn["ws"].close()
+        except Exception:
+            pass
+    state = {"active": False, "stopped_at": datetime.now().isoformat()}
+    ok = await user_service.set_app_setting("live_session_state", json.dumps(state))
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to stop live session")
+    return {"success": True}
+
+
+@app.websocket("/ws/live")
+async def websocket_live(websocket: WebSocket):
+    """Real-time live session: chat, delay, kick, mute. Query params: session_id, clerk_user_id, user_name, is_admin (true/false)."""
+    await websocket.accept()
+    session_id = websocket.query_params.get("session_id") or ""
+    clerk_user_id = (websocket.query_params.get("clerk_user_id") or "").strip()
+    user_name = (websocket.query_params.get("user_name") or "Guest").strip()[:100]
+    is_admin = (websocket.query_params.get("is_admin") or "").lower() == "true"
+    if not session_id or not clerk_user_id:
+        try:
+            await websocket.send_json({"type": "error", "message": "session_id and clerk_user_id required"})
+        except Exception:
+            pass
+        await websocket.close()
+        return
+    if not user_service:
+        try:
+            await websocket.send_json({"type": "error", "message": "Server error"})
+        except Exception:
+            pass
+        await websocket.close()
+        return
+    raw = await user_service.get_app_setting("live_session_state")
+    live_state = None
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(data, dict) and data.get("active") and data.get("session_id") == session_id:
+                live_state = data
+        except Exception:
+            pass
+    if not live_state:
+        try:
+            await websocket.send_json({"type": "error", "message": "No active live session or invalid session"})
+        except Exception:
+            pass
+        await websocket.close()
+        return
+    async with _live_rooms_lock:
+        if session_id not in _live_rooms:
+            _live_rooms[session_id] = {
+                "delay_seconds": 0,
+                "muted": set(),
+                "kicked": set(),
+                "connections": [],
+                "camera_on": False,
+            }
+        room = _live_rooms[session_id]
+        if clerk_user_id in room["kicked"]:
+            try:
+                await websocket.send_json({"type": "kicked", "message": "You have been removed from the meeting"})
+            except Exception:
+                pass
+            await websocket.close()
+            return
+        conn_info = {"ws": websocket, "clerk_user_id": clerk_user_id, "user_name": user_name, "is_admin": is_admin}
+        room["connections"].append(conn_info)
+        participants = [{"clerk_user_id": c["clerk_user_id"], "user_name": c["user_name"], "is_admin": c.get("is_admin")} for c in room["connections"]]
+        muted_list = list(room["muted"])
+        delay_seconds = room.get("delay_seconds") or 0
+
+    try:
+        await websocket.send_json({
+            "type": "room_state",
+            "delay_seconds": delay_seconds,
+            "participants": participants,
+            "muted": muted_list if is_admin else [],
+            "camera_on": room.get("camera_on", False) if 'room' in locals() else False,
+        })
+    except Exception:
+        pass
+
+    async def broadcast(data: dict, to_admin_only: bool = False, to_viewers_only: bool = False, exclude_clerk: Optional[str] = None):
+        async with _live_rooms_lock:
+            room = _live_rooms.get(session_id)
+            if not room:
+                return
+            for c in list(room["connections"]):
+                if exclude_clerk and c["clerk_user_id"] == exclude_clerk:
+                    continue
+                if to_admin_only and not c.get("is_admin"):
+                    continue
+                if to_viewers_only and c.get("is_admin"):
+                    continue
+                try:
+                    await c["ws"].send_json(data)
+                except Exception:
+                    pass
+
+    try:
+        await broadcast({"type": "participant_joined", "clerk_user_id": clerk_user_id, "user_name": user_name, "is_admin": is_admin})
+        while True:
+            msg = await websocket.receive_json()
+            kind = (msg.get("type") or "").strip()
+            if kind == "chat":
+                text = (msg.get("text") or "").strip()[:2000]
+                if not text:
+                    continue
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    if not room:
+                        continue
+                    if clerk_user_id in room["muted"]:
+                        await websocket.send_json({"type": "chat_rejected", "message": "You are muted and cannot send messages"})
+                        continue
+                    delay = room.get("delay_seconds") or 0
+                ts = datetime.now().isoformat()
+                payload = {"type": "chat", "clerk_user_id": clerk_user_id, "user_name": user_name, "text": text, "at": ts}
+                await broadcast(payload, to_viewers_only=False, to_admin_only=True)
+                if delay <= 0:
+                    await broadcast(payload, to_viewers_only=True)
+                else:
+                    async def send_delayed():
+                        await asyncio.sleep(delay)
+                        await broadcast(payload, to_viewers_only=True)
+                    asyncio.create_task(send_delayed())
+            elif kind == "set_delay" and is_admin:
+                v = msg.get("value")
+                if v is not None and isinstance(v, (int, float)):
+                    secs = max(0, min(60, int(v)))
+                    async with _live_rooms_lock:
+                        if session_id in _live_rooms:
+                            _live_rooms[session_id]["delay_seconds"] = secs
+                    await broadcast({"type": "delay_updated", "delay_seconds": secs})
+            elif kind == "camera_state" and is_admin:
+                # Admin toggled camera on/off; broadcast to viewers and remember in room state
+                on = bool(msg.get("on", False))
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    if room is not None:
+                        room["camera_on"] = on
+                await broadcast({"type": "camera_state", "on": on}, to_viewers_only=True)
+            elif kind == "kick" and is_admin:
+                target = (msg.get("clerk_user_id") or msg.get("user_id") or "").strip()
+                if not target:
+                    continue
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    if room:
+                        room["kicked"].add(target)
+                        for c in list(room["connections"]):
+                            if c["clerk_user_id"] == target:
+                                try:
+                                    await c["ws"].send_json({"type": "kicked", "message": "You have been removed from the meeting"})
+                                    await c["ws"].close()
+                                except Exception:
+                                    pass
+                                room["connections"].remove(c)
+                                break
+                await broadcast({"type": "user_removed", "clerk_user_id": target})
+            elif kind == "mute_chat" and is_admin:
+                target = (msg.get("clerk_user_id") or msg.get("user_id") or "").strip()
+                mute = msg.get("mute", True)
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    if room:
+                        if mute:
+                            room["muted"].add(target)
+                        else:
+                            room["muted"].discard(target)
+                await broadcast({"type": "mute_updated", "clerk_user_id": target, "muted": mute})
+            elif kind == "unmute_chat" and is_admin:
+                target = (msg.get("clerk_user_id") or msg.get("user_id") or "").strip()
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    if room:
+                        room["muted"].discard(target)
+                await broadcast({"type": "mute_updated", "clerk_user_id": target, "muted": False})
+            elif kind == "webrtc_offer":
+                # Admin -> specific viewer: forward SDP offer
+                target = (msg.get("target") or msg.get("clerk_user_id") or "").strip()
+                sdp = msg.get("sdp")
+                if not target or not sdp:
+                    continue
+                await broadcast(
+                    {
+                        "type": "webrtc_offer",
+                        "from": clerk_user_id,
+                        "to": target,
+                        "sdp": sdp,
+                    },
+                    to_admin_only=False,
+                    to_viewers_only=False,
+                )
+            elif kind == "webrtc_answer":
+                # Viewer -> admin: forward SDP answer
+                target = (msg.get("target") or msg.get("clerk_user_id") or "").strip()
+                sdp = msg.get("sdp")
+                if not sdp:
+                    continue
+                # If target not specified, send to all admins in room
+                async with _live_rooms_lock:
+                    room = _live_rooms.get(session_id)
+                    targets = []
+                    if room:
+                        for c in room["connections"]:
+                            if c.get("is_admin"):
+                                if (not target) or c["clerk_user_id"] == target:
+                                    targets.append(c["clerk_user_id"])
+                for t in targets or [target]:
+                    await broadcast(
+                        {
+                            "type": "webrtc_answer",
+                            "from": clerk_user_id,
+                            "to": t,
+                            "sdp": sdp,
+                        },
+                        to_admin_only=False,
+                        to_viewers_only=False,
+                    )
+            elif kind == "webrtc_ice_candidate":
+                # Forward ICE candidates between peers
+                target = (msg.get("target") or msg.get("clerk_user_id") or "").strip()
+                candidate = msg.get("candidate")
+                if not target or candidate is None:
+                    continue
+                await broadcast(
+                    {
+                        "type": "webrtc_ice_candidate",
+                        "from": clerk_user_id,
+                        "to": target,
+                        "candidate": candidate,
+                    },
+                    to_admin_only=False,
+                    to_viewers_only=False,
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        async with _live_rooms_lock:
+            room = _live_rooms.get(session_id)
+            if room:
+                for i, c in enumerate(list(room["connections"])):
+                    if c["clerk_user_id"] == clerk_user_id:
+                        room["connections"].pop(i)
+                        break
+                await broadcast({"type": "participant_left", "clerk_user_id": clerk_user_id, "user_name": user_name})
+
 @app.get("/users/email/{email}")
 async def get_user_by_email(email: str):
     """Get user information by email address."""
@@ -800,6 +1138,23 @@ def _shape_plan_for_frontend(
 
 
 # Learning Plans endpoints
+async def _require_admin(clerk_user_id: str = None, authorization: Optional[str] = None):
+    """Verify the request is from the admin user. Raises 403 if not. Returns clerk_user_id."""
+    cid = clerk_user_id or (authorization.replace("Bearer ", "").strip() if authorization else None)
+    if not cid:
+        raise HTTPException(status_code=401, detail="clerk_user_id or Authorization required")
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    user = await user_service.get_user_by_clerk_id(cid)
+    if not user:
+        raise HTTPException(status_code=403, detail="User not found")
+    email = (user.get("email") or "").strip().lower()
+    if email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return cid
+
+
+# Learning Plans endpoints
 @app.get("/learning-plans")
 async def get_learning_plans(clerk_user_id: str = None, authorization: str = Header(None)):
     """Get all learning plans for a user (from DB). Pass clerk_user_id as query param."""
@@ -947,6 +1302,87 @@ async def save_plan_from_session(payload: SavePlanFromSessionRequest):
     except Exception as e:
         print(f"Error saving plan from session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------- Admin endpoints (only ADMIN_EMAIL) ----------
+@app.get("/admin/users")
+async def admin_list_users(clerk_user_id: str = None, authorization: str = Header(None)):
+    """List all users. Requires admin (souvikbasu098@gmail.com)."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    users = await user_service.list_all_users_admin()
+    return {"success": True, "users": users}
+
+
+@app.get("/admin/learning-plans")
+async def admin_list_learning_plans(clerk_user_id: str = None, authorization: str = Header(None)):
+    """List all learning plans (all users). Requires admin."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    plans = await user_service.list_all_learning_plans_admin()
+    return {"success": True, "plans": plans}
+
+
+@app.get("/admin/chat-sessions")
+async def admin_list_chat_sessions(clerk_user_id: str = None, authorization: str = Header(None)):
+    """List all chat sessions (all users). Requires admin."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    sessions = await user_service.list_all_chat_conversations_admin()
+    return {"success": True, "sessions": sessions}
+
+
+@app.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, clerk_user_id: str = None, authorization: str = Header(None)):
+    """Delete a user and all related data. Requires admin."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    ok = await user_service.delete_user_by_id_admin(user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found or delete failed")
+    return {"success": True}
+
+
+@app.delete("/admin/learning-plans/{plan_id}")
+async def admin_delete_learning_plan(plan_id: str, clerk_user_id: str = None, authorization: str = Header(None)):
+    """Delete any learning plan. Requires admin."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    ok = await user_service.delete_learning_plan_by_id_admin(plan_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Plan not found or delete failed")
+    return {"success": True}
+
+
+@app.delete("/admin/chat-sessions/{session_id}")
+async def admin_delete_chat_session(session_id: str, clerk_user_id: str = None, authorization: str = Header(None)):
+    """Delete any chat session and its messages. Requires admin."""
+    await _require_admin(clerk_user_id, authorization)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    ok = await user_service.delete_chat_conversation_by_id_admin(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session not found or delete failed")
+    return {"success": True}
+
+
+@app.get("/admin/check")
+async def admin_check(clerk_user_id: str = None, authorization: str = Header(None)):
+    """Check if the current user is admin. Returns { isAdmin: true/false }. Never raises."""
+    cid = clerk_user_id or (authorization.replace("Bearer ", "").strip() if authorization else None)
+    if not cid or not user_service:
+        return {"isAdmin": False}
+    try:
+        user = await user_service.get_user_by_clerk_id(cid)
+        email = (user.get("email") or "").strip().lower() if user else ""
+        return {"isAdmin": email == ADMIN_EMAIL}
+    except Exception:
+        return {"isAdmin": False}
 
 
 @app.get("/learning-plans-mock")
@@ -1214,6 +1650,32 @@ async def teaching_chat(request: dict):
                             blackboard_image = feedback_image
                             print("✅ Blackboard feedback image generated (correct location highlighted)")
                         response_text_final = re.sub(r"\n?BLACKBOARD_FEEDBACK:\s*.+", "", response_text, flags=re.DOTALL).strip()
+
+                # Fallback: if the TEACHER'S reply says they've drawn something on the blackboard
+                # (e.g. \"I've just drawn the map of India on the blackboard\"), but we didn't
+                # already generate a blackboard image from the USER'S message, try to infer the
+                # drawing subject from the reply itself and generate an image.
+                if not blackboard_image:
+                    reply_lower = (response_text_final or "").lower()
+                    if "on the blackboard" in reply_lower or "on the board" in reply_lower:
+                        # Try to extract a concrete subject; if that fails, fall back to a generic
+                        # \"diagram of what was just described\" prompt based on the reply text.
+                        reply_draw_subject = _extract_draw_subject(response_text_final)
+                        if reply_draw_subject:
+                            prompt = (
+                                f"Clear, simple chalkboard-style diagram of {reply_draw_subject}. "
+                                "Drawn in white chalk on a dark blackboard, educational style, no text labels."
+                            )
+                        else:
+                            prompt = (
+                                "Clear, simple chalkboard-style diagram illustrating the following description: "
+                                f"\"{response_text_final}\". Use circles and lines if appropriate, white chalk on "
+                                "a dark blackboard, no text labels."
+                            )
+                        inferred_image = await _generate_blackboard_image_from_prompt(prompt)
+                        if inferred_image:
+                            blackboard_image = inferred_image
+                            print("✅ Blackboard image generated from teacher reply fallback prompt")
                 
                 print(f"✅ Teaching response generated | Visual needed: {should_generate_visual} | Blackboard: {bool(blackboard_image)}")
                 
@@ -1271,6 +1733,7 @@ def _extract_draw_subject(message: str) -> Optional[str]:
         "picture of", "image of",
         "show me image of", "show me a image of", "show image of",
         "show me a diagram of", "show me diagram of", "diagram of",
+        "show me a map of", "show me map of", "map of",
         "picture of a", "image of a"
     ]:
         if phrase in m:
@@ -1279,6 +1742,13 @@ def _extract_draw_subject(message: str) -> Optional[str]:
             rest = rest.split(".")[0].split(",")[0].strip()
             if len(rest) > 1 and len(rest) < 200:
                 return rest or None
+    # Fallback: general \"map\" mentions together with blackboard/board
+    if "map" in m and ("blackboard" in m or "on the board" in m or "board" in m):
+        idx = m.find("map")
+        rest = message[idx + len("map"):].strip()
+        rest = rest.split(".")[0].split(",")[0].strip()
+        if 0 < len(rest) < 200:
+            return rest
     if m.startswith("draw "):
         rest = message[5:].strip().split(".")[0].split(",")[0].strip()
         if len(rest) > 1 and len(rest) < 200:
@@ -1294,7 +1764,27 @@ async def _generate_blackboard_image(user_message: str) -> Optional[str]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or not api_key.startswith("sk-"):
         return None
-    prompt = f"Clear, simple drawing of {subject}. Clean lines, educational style, as if drawn on a blackboard. No text labels. Single central subject."
+
+    # Tune prompts for map-style requests so we get the right geography.
+    subj_lower = subject.lower()
+    if "india" in subj_lower and "map" in subj_lower:
+        # Very explicit so the model does NOT draw the US map.
+        prompt = (
+            "Clear, accurate outline political map of India ONLY (the country India in South Asia), "
+            "drawn in white chalk on a dark blackboard. Show the correct shape of India's borders and "
+            "its states, no other countries or continents, not the United States, no text labels."
+        )
+    elif "map of" in subj_lower or subj_lower.startswith("map"):
+        prompt = (
+            f"Clear, simple outline map of {subject}, drawn in white chalk on a dark blackboard. "
+            "Focus on the correct geographic shape of the region requested, with no other countries or "
+            "continents and no text labels."
+        )
+    else:
+        prompt = (
+            f"Clear, simple drawing of {subject}. Clean lines, educational style, as if drawn on a blackboard. "
+            "No text labels. Single central subject."
+        )
     prompt = prompt[:4000]
 
     def _call():
@@ -1747,6 +2237,66 @@ async def get_teaching_recommendations(request: dict):
     except Exception as e:
         print(f"Error getting teaching recommendations: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get teaching recommendations: {str(e)}")
+
+
+# === ACHIEVEMENTS ENDPOINTS ===
+
+@app.get("/achievements")
+async def list_achievements():
+    """List all available achievements."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    try:
+        achievements = await user_service.get_all_achievements()
+        # Convert UUIDs to strings
+        for a in achievements:
+            if a.get('id'): a['id'] = str(a['id'])
+            if a.get('created_at'): a['created_at'] = a['created_at'].isoformat()
+        return {"success": True, "achievements": achievements}
+    except Exception as e:
+        print(f"Error listing achievements: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user/achievements")
+async def get_my_achievements(clerk_user_id: str):
+    """Get achievements earned by the calling user."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    try:
+        earned = await user_service.get_user_achievements(clerk_user_id)
+        # Convert UUIDs to strings
+        for a in earned:
+            if a.get('id'): a['id'] = str(a['id'])
+            if a.get('user_id'): a['user_id'] = str(a['user_id'])
+            if a.get('achievement_id'): a['achievement_id'] = str(a['achievement_id'])
+            if a.get('created_at'): a['created_at'] = a['created_at'].isoformat() if isinstance(a['created_at'], datetime) else a['created_at']
+        return {"success": True, "achievements": earned}
+    except Exception as e:
+        print(f"Error getting user achievements: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GrantAchievementPayload(BaseModel):
+    clerk_user_id: str 
+    target_email: str
+    slug: str
+
+@app.post("/admin/achievements/grant")
+async def admin_grant_achievement(payload: GrantAchievementPayload):
+    """Admin only: grant a rare achievement to a user by email."""
+    await _require_admin(payload.clerk_user_id, None)
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    
+    try:
+        success = await user_service.grant_achievement_by_email(payload.target_email, payload.slug)
+        if success:
+            return {"success": True, "message": f"Granted '{payload.slug}' to {payload.target_email}"}
+        else:
+            return {"success": False, "message": "Failed to grant. user or slug not found, or already granted."}
+    except Exception as e:
+        print(f"Error granting achievement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -8,6 +8,7 @@ import Navbar from '../../components/Navbar'
 import Footer from '../../components/Footer'
 import { DashboardProfileProvider } from './DashboardProfileContext'
 import { API_ENDPOINTS } from '../../lib/api-config'
+import { useIsAdmin } from '../../lib/useIsAdmin'
 import AILoader from '../../components/AILoader'
 import 'bootstrap-icons/font/bootstrap-icons.css'
 
@@ -19,6 +20,7 @@ export default function DashboardLayout({
   const pathname = usePathname()
   const router = useRouter()
   const { isLoaded, isSignedIn, user } = useUser()
+  const { isAdmin, isLoading: adminLoading } = useIsAdmin()
   const [onboardingChecked, setOnboardingChecked] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(true)
 
@@ -54,6 +56,19 @@ export default function DashboardLayout({
     }
   }, [onboardingChecked, isSignedIn, onboardingCompleted, router])
 
+  // Admin: redirect to admin dashboard when opening /dashboard; block non-admins from /dashboard/admin
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || adminLoading) return
+    const inAdminArea = pathname.startsWith('/dashboard/admin')
+    if (isAdmin && pathname === '/dashboard') {
+      router.replace('/dashboard/admin')
+      return
+    }
+    if (!isAdmin && inAdminArea) {
+      router.replace('/dashboard')
+    }
+  }, [isLoaded, isSignedIn, adminLoading, isAdmin, pathname, router])
+
   if (!onboardingChecked || (isSignedIn && !onboardingCompleted)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-vedya-purple/5 via-white to-vedya-pink/5">
@@ -62,11 +77,25 @@ export default function DashboardLayout({
     )
   }
 
-  const navItems = [
-    { href: '/dashboard', label: 'Info', icon: 'bi-info-circle' },
-    { href: '/dashboard/learning', label: 'Learning', icon: 'bi-journal-bookmark' },
-    { href: '/dashboard/settings', label: 'Settings', icon: 'bi-gear' },
-  ]
+  const navItems = (() => {
+    if (isAdmin) {
+      return [
+        { href: '/dashboard/admin', label: 'Admin', icon: 'bi-shield-lock' },
+        { href: '/dashboard/admin/live', label: 'Go Live', icon: 'bi-broadcast' },
+      ]
+    }
+    const base = [
+      { href: '/dashboard', label: 'Info', icon: 'bi-info-circle' },
+      { href: '/dashboard/learning', label: 'Learning', icon: 'bi-journal-bookmark' },
+      { href: '/dashboard/achievements', label: 'Achievements', icon: 'bi-award' },
+      { href: '/dashboard/settings', label: 'Settings', icon: 'bi-gear' },
+    ]
+    // For normal users: only show Live in the sidebar while they are on /dashboard/live
+    if (pathname.startsWith('/dashboard/live')) {
+      base.splice(1, 0, { href: '/dashboard/live', label: 'Live', icon: 'bi-broadcast' })
+    }
+    return base
+  })()
 
   return (
     <div className="min-h-screen flex flex-col">

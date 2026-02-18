@@ -255,44 +255,11 @@ export default function TeachingInterface({ planId, moduleId }: TeachingInterfac
       console.log("Visual generation response:", data) // Log full response for debugging
       
       if (data.success && data.diagram_url) {
-        console.log("🎨 Generated diagram URL:", data.diagram_url)
-        
-        // Accept both http(s) URLs and inline data URLs (e.g. data:image/svg+xml;base64,...)
-        const validUrl = typeof data.diagram_url === 'string' && (
-          data.diagram_url.startsWith('http') || data.diagram_url.startsWith('data:image/')
-        );
-        if (!validUrl) {
-          console.error("❌ Invalid diagram URL format:", data.diagram_url?.slice?.(0, 80));
-          throw new Error("Invalid URL format received from server");
-        }
-        
-        // Create visual message
-        const visualMessage: TeachingMessage = {
-          id: Date.now().toString(),
-          content: `Here's a visual to help illustrate ${concept}:`,
-          sender: 'teacher',
-          timestamp: new Date(),
-          type: 'image',
-          imageUrl: data.diagram_url
-        }
-        
-        // Pre-validate the image URL by trying to load it
-        const imgTest = new Image();
-        imgTest.onload = () => {
-          console.log("✅ Image pre-validation successful:", data.diagram_url);
-          setMessages(prev => [...prev, visualMessage]);
-        };
-        imgTest.onerror = () => {
-          console.error("❌ Image pre-validation failed:", data.diagram_url);
-          // Still add the message, but our component will handle the error state
-          setMessages(prev => [...prev, visualMessage]);
-        };
-        imgTest.src = data.diagram_url;
-        
-        // Log supervision status
-        if (data.supervised) {
-          console.log('✅ Visual approved by supervision system')
-        }
+        console.log("🎨 Generated diagram URL (chat visual suppressed):", data.diagram_url)
+        // We still generate the diagram for API consumers, but we no longer
+        // inject an explicit \"Here's a visual\" image message into the chat
+        // stream. The learner can use the dedicated Notebook / Draw.io areas
+        // instead of inline chat images.
       } else {
         console.error("❌ Failed to generate visual:", data.error || "Unknown error")
         
@@ -381,17 +348,8 @@ export default function TeachingInterface({ planId, moduleId }: TeachingInterfac
         const visualType = data.visual_type || 'concept_illustration'
         setTimeout(() => generateSupervisedVisual(conceptToVisualize, visualType), 800)
       }
-      if (data.diagram_url) {
-        const visualMessage: TeachingMessage = {
-          id: (Date.now() + 2).toString(),
-          content: `Here's a visual to help illustrate ${data.current_concept || currentConcept}:`,
-          sender: 'teacher',
-          timestamp: new Date(),
-          type: 'image',
-          imageUrl: data.diagram_url
-        }
-        setTimeout(() => setMessages(prev => [...prev, visualMessage]), 500)
-      }
+      // We intentionally no longer push diagram_url as an inline image
+      // message in the chat area to keep the conversation text-focused.
       if (data.blackboard_image) {
         setBlackboardImageUrl(data.blackboard_image)
         setBlackboardImageKey((k) => k + 1)

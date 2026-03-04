@@ -1,6 +1,14 @@
 import { SignUp } from '@clerk/nextjs'
 
-export default function SignUpPage() {
+type PageProps = {
+  params: Promise<{ [key: string]: string[] }>
+  searchParams?: Promise<{ [key: string]: string | string[] | undefined }>
+}
+
+export default async function SignUpPage({ params, searchParams }: PageProps) {
+  await params
+  if (searchParams) await searchParams
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-vedya-purple/10 via-white to-vedya-pink/10 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -22,21 +30,6 @@ export default function SignUpPage() {
             }
           }}
         />
-        
-        {/* VAYU Innovations Fixed Badge */}
-        <div className="fixed bottom-4 right-4 z-50">
-          <div className="bg-white/90 backdrop-blur-sm border border-gray-200 rounded-full px-4 py-2 shadow-lg">
-            <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-vedya-purple rounded-full animate-pulse"></div>
-              <span className="text-sm font-medium text-gray-700">
-                Powered by{' '}
-                <span className="gradient-text font-bold">
-                  VAYU Innovations
-                </span>
-              </span>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   )

@@ -1,15 +1,29 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import { Inter, Poppins } from 'next/font/google'
 import { ClerkProvider } from '@clerk/nextjs'
 import '../styles/globals.css'
+import 'bootstrap-icons/font/bootstrap-icons.css'
+import LenisProvider from '../components/LenisProvider'
+import OnboardingGate from '../components/OnboardingGate'
+import ReduxProvider from '../components/ReduxProvider'
 
 const inter = Inter({ subsets: ['latin'] })
+const poppins = Poppins({ 
+  subsets: ['latin'],
+  weight: ['600', '700', '800', '900'],
+  variable: '--font-poppins',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
-  title: 'VEDYA - AI-Powered Education Platform',
+  title: 'VEDYA – AI-Powered Education Platform',
   description: 'Personalized learning experiences powered by advanced AI technology. Built by VAYU Innovations.',
   keywords: ['education', 'ai', 'learning', 'personalized', 'vayu innovations'],
   authors: [{ name: 'VAYU Innovations' }],
+  icons: {
+    icon: '/assets/images/Logo.png',
+    apple: '/assets/images/Logo.png',
+  },
   openGraph: {
     title: 'VEDYA - AI-Powered Education Platform',
     description: 'Personalized learning experiences powered by advanced AI technology.',
@@ -30,9 +44,8 @@ export default function RootLayout({
 }) {
   return (
     <ClerkProvider>
-      <html lang="en" className="scroll-smooth">
+      <html lang="en">
         <head>
-          <link rel="icon" href="/favicon.ico" />
           <link
             rel="preconnect"
             href="https://fonts.googleapis.com"
@@ -43,25 +56,15 @@ export default function RootLayout({
             crossOrigin="anonymous"
           />
         </head>
-        <body className={`${inter.className} antialiased`}>
-          <div className="min-h-screen bg-gray-50">
-            {children}
-            
-            {/* VAYU Innovations Fixed Badge */}
-            <div className="fixed bottom-4 right-4 z-50">
-              <div className="bg-white/90 backdrop-blur-sm border border-gray-200 rounded-full px-4 py-2 shadow-lg">
-                <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-vedya-purple rounded-full animate-pulse"></div>
-                  <span className="text-sm font-medium text-gray-700">
-                    Powered by{' '}
-                    <span className="gradient-text font-bold">
-                      VAYU Innovations
-                    </span>
-                  </span>
-                </div>
+        <body className={`${inter.className} ${poppins.variable} antialiased`}>
+          <ReduxProvider>
+            <LenisProvider>
+              <div className="min-h-screen">
+                {children}
+                <OnboardingGate />
               </div>
-            </div>
-          </div>
+            </LenisProvider>
+          </ReduxProvider>
         </body>
       </html>
     </ClerkProvider>

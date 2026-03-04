@@ -1,0 +1,36 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg>
+  <defs>
+    <font id="VEDYA" horiz-adv-x="1000">
+      <font-face 
+        font-family="VEDYA"
+        units-per-em="1000"
+        ascent="800"
+        descent="-200" />
+      <missing-glyph horiz-adv-x="500" />
+
+      <!-- V -->
+      <glyph unicode="V" horiz-adv-x="800"
+        d="M100 700 L350 0 Q400 -50 450 0 L700 700 L580 700 L400 200 L220 700 Z" />
+
+      <!-- E -->
+      <glyph unicode="E" horiz-adv-x="700"
+        d="M150 0 L550 0 L550 120 L270 120 L270 300 L500 300 L500 420 L270 420 L270 580 L550 580 L550 700 L150 700 Z" />
+
+      <!-- D -->
+      <glyph unicode="D" horiz-adv-x="750"
+        d="M150 0 L420 0 C600 0 650 180 650 350 C650 520 600 700 420 700 L150 700 Z" />
+
+      <!-- Y -->
+      <glyph unicode="Y" horiz-adv-x="800"
+        d="M120 700 L360 360 L360 0 L460 0 L460 360 L700 700 L560 700 L410 460 L260 700 Z" />
+
+      <!-- A -->
+      <glyph unicode="A" horiz-adv-x="800"
+        d="M120 0 L360 700 Q400 780 440 700 L680 0 L560 0 L500 200 L300 200 L240 0 Z" />
+
+    </font>
+  </defs>
+</svg>

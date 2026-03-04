@@ -1,0 +1,38 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg>
+  <defs>
+    <font id="VEDYA-Rounded" horiz-adv-x="1000">
+      <font-face 
+        font-family="VEDYA Rounded"
+        units-per-em="1000"
+        ascent="800"
+        descent="-200" />
+      <missing-glyph horiz-adv-x="500" />
+
+      <!-- V -->
+      <glyph unicode="V" horiz-adv-x="850"
+        d="M120 700 Q200 700 240 620 L420 200 L600 620 Q640 700 720 700 Q780 700 750 620 L500 80 Q460 0 420 0 Q380 0 340 80 L90 620 Q60 700 120 700 Z" />
+
+      <!-- E -->
+      <glyph unicode="E" horiz-adv-x="750"
+        d="M200 0 Q120 0 120 80 L120 620 Q120 700 200 700 L620 700 Q700 700 700 620 Q700 560 620 560 L300 560 L300 420 L560 420 Q640 420 640 350 Q640 280 560 280 L300 280 L300 140 L620 140 Q700 140 700 80 Q700 0 620 0 Z" />
+
+      <!-- D -->
+      <glyph unicode="D" horiz-adv-x="820"
+        d="M200 0 Q120 0 120 80 L120 620 Q120 700 200 700 L450 700 Q700 700 700 350 Q700 0 450 0 Z
+           M300 140 L430 140 Q540 140 540 350 Q540 560 430 560 L300 560 Z" />
+
+      <!-- Y -->
+      <glyph unicode="Y" horiz-adv-x="820"
+        d="M120 700 Q200 700 240 620 L410 360 L580 620 Q620 700 700 700 Q760 700 730 620 L500 300 L500 80 Q500 0 410 0 Q320 0 320 80 L320 300 L90 620 Q60 700 120 700 Z" />
+
+      <!-- A -->
+      <glyph unicode="A" horiz-adv-x="850"
+        d="M420 700 Q460 700 500 620 L740 80 Q780 0 700 0 Q620 0 590 80 L540 200 L300 200 L250 80 Q220 0 140 0 Q60 0 100 80 L340 620 Q380 700 420 700 Z
+           M340 340 L500 340 L420 520 Z" />
+
+    </font>
+  </defs>
+</svg>

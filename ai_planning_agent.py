@@ -77,7 +77,12 @@ class AIPoweredPlanningAgent:
         self.sessions[new_session_id] = session
         return session
     
-    async def process_message(self, message: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_message(
+        self,
+        message: str,
+        session_id: Optional[str] = None,
+        plan_ready_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
         session = self.get_or_create_session(session_id)
         session.updated_at = datetime.now()
         
@@ -92,7 +97,7 @@ class AIPoweredPlanningAgent:
         elif session.stage == ConversationStage.GATHERING:
             response = await self._handle_requirements_gathering(session, message)
         elif session.stage == ConversationStage.PLANNING:
-            response = await self._handle_plan_generation(session, message)
+            response = await self._handle_plan_generation(session, message, plan_ready_message=plan_ready_message)
         else:
             response = await self._handle_complete_stage(session, message)
         
@@ -201,10 +206,19 @@ If you have subject + 2 other requirements, say you're ready to create their pla
                 "metadata": {"error": str(e)}
             }
     
-    async def _handle_plan_generation(self, session: PlanningSession, message: str) -> Dict[str, Any]:
-        return await self._generate_learning_plan(session)
+    async def _handle_plan_generation(
+        self,
+        session: PlanningSession,
+        message: str,
+        plan_ready_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await self._generate_learning_plan(session, plan_ready_message=plan_ready_message)
     
-    async def _generate_learning_plan(self, session: PlanningSession) -> Dict[str, Any]:
+    async def _generate_learning_plan(
+        self,
+        session: PlanningSession,
+        plan_ready_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
         requirements = session.profile.raw_data
         subject = requirements.get("subject", "the subject")
         
@@ -293,8 +307,9 @@ If you have subject + 2 other requirements, say you're ready to create their pla
             message += f"{i}. {module['title']} ({module['duration_weeks']} weeks)\n"
         
         message += "\nYour complete learning plan with syllabus and progress tracking is ready!\n\n"
-        message += "Ready to start learning? I can take you to your personalized dashboard where you'll see your full plan, progress tracking, and begin your first lesson."
-        
+        default_ready = "Ready to start learning? I can take you to your personalized dashboard where you'll see your full plan, progress tracking, and begin your first lesson."
+        message += (plan_ready_message and plan_ready_message.strip()) or default_ready
+
         return {
             "message": message,
             "metadata": {

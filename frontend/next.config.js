@@ -3,6 +3,10 @@ const path = require('path');
 const nextConfig = {
   images: {
     domains: ['localhost'],
+    remotePatterns: [
+      { protocol: 'https', hostname: 'picsum.photos', pathname: '/**' },
+      { protocol: 'https', hostname: 'images.unsplash.com', pathname: '/**' },
+    ],
   },
   // Silence workspace root inference warning on multi-lockfile monorepo style layout
   outputFileTracingRoot: path.join(__dirname),

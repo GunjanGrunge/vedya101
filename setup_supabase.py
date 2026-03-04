@@ -7,18 +7,43 @@ This script sets up the necessary database schema and extensions for VEDYA.
 import os
 import asyncio
 import asyncpg
+from urllib.parse import urlparse, urlunparse, quote
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
+
+def _normalize_database_url(url: str) -> str:
+    """Encode password so special characters like @ don't break the URL."""
+    if not url or not url.startswith("postgresql://"):
+        return url
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc
+        if "@" not in netloc:
+            return url
+        userinfo, hostport = netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            user, _, password = userinfo.partition(":")
+            if password and any(c in password for c in "@:/?#[]"):
+                safe_password = quote(password, safe="")
+                safe_netloc = f"{user}:{safe_password}@{hostport}"
+                return urlunparse((parsed.scheme, safe_netloc, parsed.path or "/", parsed.params, parsed.query, parsed.fragment))
+    except Exception:
+        pass
+    return url
+
+
 async def setup_supabase_database():
     """Set up Supabase database with required extensions and tables."""
     
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
+    raw_url = os.getenv("DATABASE_URL")
+    if not raw_url:
         print("❌ DATABASE_URL not found in environment variables")
         return False
+
+    database_url = _normalize_database_url(raw_url)
     
     try:
         # Connect to Supabase PostgreSQL
@@ -53,6 +78,26 @@ async def setup_supabase_database():
         """)
         print("✅ Users table created")
         
+        # User onboarding table (wizard data for new users)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_onboarding (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+                full_name VARCHAR(255),
+                address TEXT,
+                gender VARCHAR(50),
+                country VARCHAR(255),
+                age INTEGER,
+                languages_to_learn JSONB DEFAULT '[]',
+                educational_status VARCHAR(255),
+                completed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_onboarding_user_id ON user_onboarding(user_id)")
+        print("✅ User onboarding table created")
+        
         # Learning plans table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS learning_plans (
@@ -67,7 +112,19 @@ async def setup_supabase_database():
             )
         """)
         print("✅ Learning plans table created")
-        
+        await conn.execute("ALTER TABLE learning_plans ADD COLUMN IF NOT EXISTS plan_data JSONB DEFAULT '{}'")
+        print("✅ learning_plans.plan_data column added")
+
+        # App settings (e.g. configurable plan-ready message)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        print("✅ App settings table created")
+
         # Courses table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS courses (

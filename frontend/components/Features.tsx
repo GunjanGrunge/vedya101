@@ -1,13 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import 'bootstrap-icons/font/bootstrap-icons.css'
 
 const features = [
   {
     id: 'ai-personalization',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-      </svg>
-    ),
+    icon: <i className="bi bi-cpu-fill text-3xl"></i>,
     title: 'AI-Powered Personalization',
     description: 'Our advanced AI algorithms analyze your learning patterns and preferences to create a completely personalized educational experience.',
     details: [
@@ -19,11 +16,7 @@ const features = [
   },
   {
     id: 'interactive-content',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h8m2-8V8a2 2 0 00-2-2H7a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V8z" />
-      </svg>
-    ),
+    icon: <i className="bi bi-play-circle-fill text-3xl"></i>,
     title: 'Interactive Learning Content',
     description: 'Engage with dynamic, multimedia content that makes learning enjoyable and effective.',
     details: [
@@ -35,11 +28,7 @@ const features = [
   },
   {
     id: 'progress-tracking',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-      </svg>
-    ),
+    icon: <i className="bi bi-bar-chart-fill text-3xl"></i>,
     title: 'Advanced Progress Tracking',
     description: 'Monitor your learning journey with comprehensive analytics and insights.',
     details: [
@@ -51,11 +40,7 @@ const features = [
   },
   {
     id: 'multi-agent-system',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-      </svg>
-    ),
+    icon: <i className="bi bi-diagram-3-fill text-3xl"></i>,
     title: 'Multi-Agent Learning System',
     description: 'Experience coordinated AI agents working together to optimize your learning experience.',
     details: [
@@ -67,11 +52,7 @@ const features = [
   },
   {
     id: 'assessments',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
+    icon: <i className="bi bi-clipboard-check-fill text-3xl"></i>,
     title: 'Smart Assessments',
     description: 'Take adaptive quizzes and assessments that adjust to your knowledge level.',
     details: [
@@ -83,11 +64,7 @@ const features = [
   },
   {
     id: 'collaboration',
-    icon: (
-      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-      </svg>
-    ),
+    icon: <i className="bi bi-people-fill text-3xl"></i>,
     title: 'Collaborative Learning',
     description: 'Connect with peers and learn together in our interactive community environment.',
     details: [
@@ -101,79 +78,187 @@ const features = [
 
 export default function Features() {
   const [activeFeature, setActiveFeature] = useState<string | null>(null)
+  const [isVisible, setIsVisible] = useState(false)
+  const sectionRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true)
+        }
+      },
+      {
+        threshold: 0.15,
+        rootMargin: '0px 0px -80px 0px',
+      }
+    )
+
+    if (sectionRef.current) {
+      observer.observe(sectionRef.current)
+    }
+
+    return () => {
+      if (sectionRef.current) {
+        observer.unobserve(sectionRef.current)
+      }
+    }
+  }, [])
 
   return (
-    <section id="features" className="py-20 bg-gradient-to-b from-white to-gray-50">
+    <section
+      id="features"
+      ref={sectionRef}
+      className="py-20 bg-transparent"
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
-        <div className="text-center mb-16">
+        <div
+          className={`text-center mb-16 transition-all duration-1000 ease-out ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'
+            }`}
+        >
           <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-            Powerful Features for 
+            Powerful Features for
             <span className="gradient-text block mt-2">Modern Learning</span>
           </h2>
           <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-            Discover how our cutting-edge technology transforms the way you learn, 
+            Discover how our cutting-edge technology transforms the way you learn,
             making education more personalized, engaging, and effective than ever before.
           </p>
         </div>
 
         {/* Features Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {features.map((feature) => (
+          {features.map((feature, index) => (
             <FeatureCard
               key={feature.id}
               feature={feature}
               isActive={activeFeature === feature.id}
               onClick={() => setActiveFeature(activeFeature === feature.id ? null : feature.id)}
+              index={index}
+              isSectionVisible={isVisible}
             />
           ))}
         </div>
 
-        {/* Feature Showcase */}
-        <div className="mt-20">
+        {/* Learning Impact Showcase - CTA + Analytics Card */}
+        <div
+          className={`
+            mt-20 transition-all duration-1000 ease-out
+            ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}
+          `}
+          style={{ transitionDelay: '300ms' }}
+        >
           <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
             <div className="grid grid-cols-1 lg:grid-cols-2">
-              {/* Left side - Feature visualization */}
-              <div className="bg-gradient-to-br from-vedya-purple/10 to-vedya-pink/10 p-8 lg:p-12 flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-32 h-32 mx-auto mb-6 bg-gradient-to-br from-vedya-purple to-vedya-pink rounded-full flex items-center justify-center text-white shadow-2xl">
-                    <svg className="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
+              {/* Left side - CTA content */}
+              <div
+                className={`
+                  p-8 lg:p-12 flex items-center
+                  transition-all duration-1000 ease-out
+                  ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}
+                `}
+                style={{ transitionDelay: '350ms' }}
+              >
+                <div className="space-y-6">
+                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-100 text-slate-700 text-sm shadow-sm">
+                    <i className="bi bi-people text-slate-700"></i>
+                    <span>Trusted by 10k+ learners</span>
                   </div>
-                  <h3 className="text-2xl font-bold text-gray-900 mb-4">
+
+                  <h3 className="text-3xl md:text-4xl font-bold text-gray-900 leading-tight">
                     Experience the Future of Learning
                   </h3>
-                  <p className="text-gray-600">
-                    Join thousands of learners who have transformed their education with VEDYA
+                  <p className="text-gray-600 text-base md:text-lg max-w-xl">
+                    Join thousands of learners who have transformed their education with VEDYA&apos;s
+                    AI-powered personalized learning paths and real-time progress insights.
                   </p>
+
+                  <div className="flex flex-col sm:flex-row gap-4 pt-2">
+                    <button
+                      onClick={() =>
+                        document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' })
+                      }
+                      className="group bg-vedya-purple text-white px-8 py-3 rounded-xl font-semibold shadow-lg hover:shadow-2xl hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
+                    >
+                      <span>Get Started</span>
+                      <i className="bi bi-arrow-right-short text-xl group-hover:translate-x-1 transition-transform"></i>
+                    </button>
+                    <button
+                      onClick={() =>
+                        document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' })
+                      }
+                      className="group bg-white text-slate-800 px-8 py-3 rounded-xl font-semibold border border-slate-200 shadow-sm hover:shadow-md hover:border-vedya-purple/60 hover:text-vedya-purple transition-all duration-300 flex items-center justify-center gap-2"
+                    >
+                      <i className="bi bi-play-circle text-lg group-hover:scale-110 transition-transform"></i>
+                      <span>Learn More</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* Right side - Stats */}
-              <div className="p-8 lg:p-12">
-                <h3 className="text-2xl font-bold text-gray-900 mb-8">Learning Impact</h3>
-                <div className="space-y-6">
-                  <StatItem 
-                    label="Learning Efficiency Increase"
-                    value="85%"
-                    color="text-vedya-purple"
-                  />
-                  <StatItem 
-                    label="Student Engagement Rate"
-                    value="94%"
-                    color="text-vedya-pink"
-                  />
-                  <StatItem 
-                    label="Knowledge Retention"
-                    value="78%"
-                    color="text-vedya-orange"
-                  />
-                  <StatItem 
-                    label="Course Completion Rate"
-                    value="92%"
-                    color="text-vedya-yellow"
-                  />
+              {/* Right side - Analytics style card */}
+              <div
+                className={`
+                  bg-gradient-to-br from-vedya-purple/5 via-white to-vedya-pink/10 p-8 lg:p-12 flex items-center justify-center
+                  transition-all duration-1000 ease-out
+                  ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}
+                `}
+                style={{ transitionDelay: '450ms' }}
+              >
+                <div className="w-full max-w-md bg-white rounded-3xl shadow-[0_24px_60px_rgba(15,23,42,0.18)] p-6 relative overflow-hidden">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <p className="text-xs font-medium text-slate-500 uppercase tracking-widest">
+                        Learning Balance
+                      </p>
+                      <p className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                        On track
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-slate-500">Active learners</p>
+                      <p className="text-xl font-semibold text-slate-900">682.5k</p>
+                    </div>
+                  </div>
+
+                  {/* Simple bar chart representation */}
+                  <div className="mt-4 mb-6 h-32 flex items-end gap-2">
+                    {['h-8', 'h-12', 'h-16', 'h-10', 'h-20', 'h-32', 'h-18', 'h-14', 'h-10', 'h-16', 'h-12', 'h-8'].map(
+                      (height, idx) => (
+                        <div
+                          key={idx}
+                          className={`flex-1 rounded-full bg-slate-100 overflow-hidden relative`}
+                        >
+                          <div
+                            className={`absolute bottom-0 left-0 right-0 rounded-full ${idx === 5 ? 'bg-vedya-purple' : 'bg-vedya-purple/25'
+                              } ${height}`}
+                          ></div>
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  {/* Learning impact stats */}
+                  <div className="grid grid-cols-2 gap-4 text-xs">
+                    <div>
+                      <p className="text-slate-500 mb-1">Learning Efficiency</p>
+                      <p className="text-sm font-semibold text-emerald-600">+85%</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500 mb-1">Engagement Rate</p>
+                      <p className="text-sm font-semibold text-emerald-600">94%</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500 mb-1">Retention</p>
+                      <p className="text-sm font-semibold text-emerald-600">78%</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500 mb-1">Course Completion</p>
+                      <p className="text-sm font-semibold text-emerald-600">92%</p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -188,26 +273,31 @@ interface FeatureCardProps {
   feature: typeof features[0]
   isActive: boolean
   onClick: () => void
+  index: number
+  isSectionVisible: boolean
 }
 
-function FeatureCard({ feature, isActive, onClick }: FeatureCardProps) {
+function FeatureCard({ feature, isActive, onClick, index, isSectionVisible }: FeatureCardProps) {
   return (
     <div
       className={`
-        bg-white rounded-2xl p-6 shadow-lg cursor-pointer transition-all duration-300
-        hover:shadow-xl hover:transform hover:scale-105
-        ${isActive ? 'ring-2 ring-vedya-purple shadow-xl scale-105' : ''}
+        group bg-white rounded-2xl p-6 shadow-lg cursor-pointer
+        transition-all duration-700 ease-out
+        hover:shadow-2xl hover:transform hover:scale-105 hover:-translate-y-1
+        ${isActive ? 'ring-2 ring-vedya-purple shadow-2xl scale-105 -translate-y-1' : ''}
+        ${isSectionVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
       `}
       onClick={onClick}
+      style={{ transitionDelay: `${200 + index * 120}ms` }}
     >
-      <div className="text-vedya-purple mb-4 flex justify-center">{feature.icon}</div>
+      <div className="text-vedya-purple mb-4 flex justify-center transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6">{feature.icon}</div>
       <h3 className="text-xl font-semibold text-gray-900 mb-3">
         {feature.title}
       </h3>
       <p className="text-gray-600 mb-4 leading-relaxed">
         {feature.description}
       </p>
-      
+
       {/* Expandable details */}
       <div className={`overflow-hidden transition-all duration-300 ${isActive ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'}`}>
         <div className="border-t border-gray-200 pt-4 mt-4">
@@ -241,7 +331,7 @@ function StatItem({ label, value, color }: StatItemProps) {
       <span className="text-gray-600">{label}</span>
       <div className="flex items-center">
         <div className="w-24 h-2 bg-gray-200 rounded-full mr-3">
-          <div 
+          <div
             className={`h-full ${color.replace('text-', 'bg-')} rounded-full transition-all duration-1000`}
             style={{ width: value }}
           ></div>

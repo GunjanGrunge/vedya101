@@ -882,7 +882,9 @@ Start with a warm welcome and ask about their familiarity with {current_module} 
                 "plan_data": learning_plan
             }
     
-    async def handle_teaching_chat(self, message: str, session_context: Dict[str, Any]) -> Dict[str, Any]:
+    async def handle_teaching_chat(
+        self, message: str, session_context: Dict[str, Any], image_base64: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Handle ongoing teaching conversation with contextual awareness."""
         
         subject = session_context.get('subject', 'the subject')
@@ -901,7 +903,56 @@ Start with a warm welcome and ask about their familiarity with {current_module} 
                 "current_concept": session_context.get('current_concept', current_module.lower().replace(' ', '_'))
             }
         
-        system_prompt = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
+        # If the user is submitting a "pointing" answer (they marked an area and want us to evaluate)
+        evaluating_pointing = session_context.get("evaluating_user_pointing") and session_context.get("pointing_question") and image_base64
+        if evaluating_pointing:
+            pointing_question = session_context.get("pointing_question", "")
+            eval_system = f"""You are evaluating the student's answer. They were asked: "{pointing_question}"
+
+They have submitted an image where they marked an area (e.g. on a map or diagram). Look at the image and determine if they pointed to the CORRECT location.
+
+- If CORRECT: Say so briefly and encouragingly (1-2 sentences). Do NOT add any BLACKBOARD_FEEDBACK line.
+- If INCORRECT: Say so briefly, tell them where the correct answer is (1-2 sentences). Then on a new line add exactly:
+BLACKBOARD_FEEDBACK: <one DALL·E prompt to show the same image with the correct location highlighted, e.g. "India map with Rajasthan state highlighted in red">"""
+            human_content = [
+                {"type": "text", "text": f"The question was: {pointing_question}. The student says: {message}. Their marked image is attached."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}
+            ]
+            try:
+                response = await self.llm.ainvoke([
+                    SystemMessage(content=eval_system),
+                    HumanMessage(content=human_content)
+                ])
+                return {
+                    "success": True,
+                    "response": response.content,
+                    "type": "text",
+                    "current_concept": session_context.get('current_concept', ''),
+                    "should_generate_visual": False,
+                    "trigger_assessment": False
+                }
+            except Exception as e:
+                print(f"Error in teaching chat (evaluate pointing): {e}")
+                return {
+                    "success": False,
+                    "response": "I had trouble checking your answer. Please try again or ask for another question.",
+                    "type": "text"
+                }
+        
+        # If the user asked for a drawing and we're showing it on the blackboard, tell the agent so it doesn't duplicate with ASCII
+        blackboard_draw = session_context.get("user_requested_blackboard_drawing") and session_context.get("blackboard_image_ready")
+        draw_subject_ctx = session_context.get("draw_subject", "")
+        
+        if blackboard_draw and draw_subject_ctx:
+            system_prompt = f"""You are a friendly AI tutor. The student asked for a drawing: "{draw_subject_ctx}".
+
+We are already displaying that drawing on the BLACKBOARD (the panel next to this chat). So:
+- Do NOT provide ASCII art, text sketches, or duplicate the drawing in the chat.
+- Reply in 1-2 short sentences: acknowledge that you've drawn it on the blackboard and invite them to look at it.
+- Stay on the student's topic. If they asked for circles and a line (or an apple, or a simple shape), do NOT pivot to neural networks or AI unless they explicitly asked about that.
+- End with one brief, relevant question if natural (e.g. "What would you like to try next?" or "Want me to draw something else?")."""
+        else:
+            system_prompt = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
 
 CONTEXT:
 - Student's Learning Style: {learning_style}
@@ -919,21 +970,32 @@ TEACHING GUIDELINES:
 8. Keep all responses under 5 sentences
 
 RESPONSE INSTRUCTIONS:
+- Respond to what the student ACTUALLY asked. If they asked about an everyday object (e.g. an apple) or a simple drawing (circles, shapes), stay on that topic. Do NOT force the conversation to neural networks or AI unless they asked for that.
 - End each response with a thoughtful question to maintain dialogue
-- Use concrete examples related to {subject}
+- Use concrete examples related to the student's current topic
 - Be encouraging and supportive
 - Don't overwhelm with information
 - NEVER present multiple concepts at once
 - NEVER use extensive numbered lists or bullet points
-- Adjust your teaching pace based on the student's responses
+- NEVER respond with ASCII art or text-based drawings when they asked for an image—we show images on the blackboard instead
 
 Remember: You are having a conversation with the student, not delivering a lecture."""
 
         try:
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=f"Student says: {message}")
-            ]
+            if image_base64:
+                human_content = [
+                    {"type": "text", "text": f"Student says: {message}. They shared an image (e.g. a sketch or diagram). Look at the image and respond to what they're showing or asking."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}
+                ]
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=human_content)
+                ]
+            else:
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=f"Student says: {message}")
+                ]
             
             response = await self.llm.ainvoke(messages)
             
@@ -1103,9 +1165,10 @@ class ImageGenerationAssistant(VEDYAAgent):
         educational_prompt = self._create_educational_prompt(concept, subject, visual_type)
         
         try:
-            # In a real implementation, this would call DALL-E or other image generation API
-            # For now, we'll create contextual placeholder images
-            visual_url = self._generate_contextual_placeholder(concept, subject, visual_type)
+            # Generate image using OpenAI DALL·E 3
+            visual_url = await self._generate_image_openai(educational_prompt)
+            if not visual_url:
+                visual_url = self._generate_contextual_placeholder(concept, subject, visual_type)
             
             # Log generation for monitoring
             await self._log_generation_request(concept, subject, visual_type, supervisor_context)
@@ -1171,36 +1234,65 @@ class ImageGenerationAssistant(VEDYAAgent):
         
         return prompts.get(visual_type, f"Educational diagram of {concept} in {subject}. Clean, clear, academic style.")
     
+    async def _generate_image_openai(self, prompt: str) -> Optional[str]:
+        """Generate an image using OpenAI DALL·E 3. Returns a data URL or None on failure."""
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key or not api_key.startswith("sk-"):
+            print("⚠️ OPENAI_API_KEY missing or invalid, skipping DALL·E")
+            return None
+
+        def _call_dalle() -> Optional[str]:
+            try:
+                client = openai.OpenAI(api_key=api_key)
+                # DALL·E 3: sync API only; keep prompt within length/safety
+                safe_prompt = (prompt or "Educational diagram")[:4000]
+                resp = client.images.generate(
+                    model="dall-e-3",
+                    prompt=safe_prompt,
+                    size="1024x1024",
+                    quality="standard",
+                    response_format="b64_json",
+                    style="natural",
+                    n=1,
+                )
+                if not resp.data or len(resp.data) == 0:
+                    return None
+                b64 = getattr(resp.data[0], "b64_json", None)
+                if not b64:
+                    return None
+                return f"data:image/png;base64,{b64}"
+            except Exception as e:
+                print(f"⚠️ DALL·E generation failed: {e}")
+                return None
+
+        try:
+            return await asyncio.to_thread(_call_dalle)
+        except Exception as e:
+            print(f"⚠️ DALL·E task failed: {e}")
+            return None
+
     def _generate_contextual_placeholder(self, concept: str, subject: str, visual_type: str) -> str:
-        """Generate contextual placeholder images until real image generation is implemented."""
-        
-        # Clean concept and subject for URL
-        concept_clean = concept.replace(' ', '+').replace('_', '+')
-        subject_clean = subject.replace(' ', '+')
-        
-        # Color schemes based on subject
+        """Generate inline SVG diagram (data URL). No external image service required."""
+        from diagram_utils import make_diagram_data_url
+
         subject_colors = {
-            'artificial intelligence': '4F46E5/FFFFFF',
-            'computer science': '059669/FFFFFF', 
-            'mathematics': 'DC2626/FFFFFF',
-            'physics': '7C3AED/FFFFFF',
-            'chemistry': 'EA580C/FFFFFF',
-            'biology': '16A34A/FFFFFF',
-            'history': '92400E/FFFFFF',
-            'literature': 'BE185D/FFFFFF'
+            'artificial intelligence': '4F46E5',
+            'computer science': '059669',
+            'mathematics': 'DC2626',
+            'physics': '7C3AED',
+            'chemistry': 'EA580C',
+            'biology': '16A34A',
+            'history': '92400E',
+            'literature': 'BE185D',
         }
-        
-        color = subject_colors.get(subject.lower(), '6366F1/FFFFFF')
-        
-        # Create educational placeholder based on visual type
+        color = subject_colors.get(subject.lower(), '6366F1')
         if visual_type == "flowchart":
-            return f"https://via.placeholder.com/800x600/{color}?text={concept_clean}+Flowchart%0A%0AStep+1+→+Step+2+→+Step+3%0A%0AProcess+Visualization"
-        elif visual_type == "mind_map":
-            return f"https://via.placeholder.com/800x600/{color}?text={concept_clean}+Mind+Map%0A%0ACore+Concept%0A├─+Branch+1%0A├─+Branch+2%0A└─+Branch+3"
-        elif visual_type == "comparison_chart":
-            return f"https://via.placeholder.com/800x600/{color}?text={concept_clean}+Comparison%0A%0AOption+A+|+Option+B%0AFeature+1+|+Feature+2%0AAdvantage+|+Disadvantage"
-        else:
-            return f"https://via.placeholder.com/800x600/{color}?text={concept_clean}%0A%0A{subject_clean}%0A%0AEducational+Diagram"
+            return make_diagram_data_url(concept, subject, "Flowchart · Process Visualization", color)
+        if visual_type == "mind_map":
+            return make_diagram_data_url(concept, subject, "Mind Map · Core Concept", color)
+        if visual_type == "comparison_chart":
+            return make_diagram_data_url(concept, subject, "Comparison Chart", color)
+        return make_diagram_data_url(concept, subject, "Educational Diagram", color)
     
     async def _log_generation_request(self, concept: str, subject: str, visual_type: str, 
                                     supervisor_context: Dict[str, Any]) -> None:

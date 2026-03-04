@@ -257,11 +257,6 @@ export default function LearningPlanPage({ planData }: LearningPlanPageProps) {
           </div>
         </div>
       </div>
-
-      {/* VAYU Innovations Badge */}
-      <div className="fixed bottom-4 left-4 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs text-gray-600 border shadow-sm">
-        Powered by VAYU Innovations
-      </div>
     </div>
   )
 }

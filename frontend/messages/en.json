@@ -1,0 +1,109 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "learn": "Learn",
+    "settings": "Settings",
+    "logout": "Sign Out",
+    "notifications": "Notifications",
+    "home": "Home",
+    "pricing": "Pricing",
+    "faq": "FAQ",
+    "contact": "Contact"
+  },
+  "auth": {
+    "signIn": "Sign In",
+    "signUp": "Sign Up",
+    "email": "Email",
+    "password": "Password",
+    "forgotPassword": "Forgot Password?",
+    "continueWithGoogle": "Continue with Google",
+    "alreadyHaveAccount": "Already have an account?",
+    "dontHaveAccount": "Don't have an account?"
+  },
+  "dashboard": {
+    "welcome": "Welcome back",
+    "myPlan": "My Learning Plan",
+    "progress": "Progress",
+    "recentSessions": "Recent Sessions",
+    "startLearning": "Start Learning",
+    "noPlans": "No learning plans yet",
+    "createPlan": "Create a Plan",
+    "totalSessions": "Total Sessions",
+    "hoursLearned": "Hours Learned",
+    "achievementsEarned": "Achievements Earned"
+  },
+  "learning": {
+    "startSession": "Start Session",
+    "continueLesson": "Continue Lesson",
+    "assessment": "Assessment",
+    "complete": "Complete",
+    "nextModule": "Next Module",
+    "previousModule": "Previous Module",
+    "askQuestion": "Ask a question...",
+    "typeMessage": "Type a message...",
+    "sendMessage": "Send",
+    "generating": "Generating response...",
+    "sessionEnded": "Session Ended"
+  },
+  "onboarding": {
+    "step1": "Step 1: Personal Details",
+    "step2": "Step 2: Learning Preferences",
+    "name": "Full Name",
+    "age": "Age",
+    "grade": "Grade / Class",
+    "subject": "Preferred Subject",
+    "learningStyle": "Learning Style",
+    "welcome": "Welcome to VEDYA!",
+    "letsGetStarted": "Let's get started",
+    "completeProfile": "Complete Your Profile",
+    "almostDone": "Almost Done!",
+    "finish": "Finish Setup"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "loading": "Loading...",
+    "error": "An error occurred. Please try again.",
+    "success": "Success!",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "view": "View",
+    "back": "Back",
+    "next": "Next",
+    "close": "Close",
+    "search": "Search",
+    "filter": "Filter",
+    "refresh": "Refresh",
+    "learnMore": "Learn More",
+    "getStarted": "Get Started",
+    "startLearning": "Start Learning"
+  },
+  "freemium": {
+    "upgradePrompt": "Upgrade to unlock unlimited learning sessions and all subjects.",
+    "limitReached": "You have reached your free plan limit.",
+    "upgrade": "Upgrade Now",
+    "sessionLimitReached": "Session limit reached",
+    "subjectLimitReached": "Subject limit reached",
+    "hoursRemaining": "{hours} hours remaining",
+    "upgradeToday": "Upgrade today for unlimited access"
+  },
+  "content": {
+    "pendingReview": "Pending Review",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "underReview": "Under Review",
+    "published": "Published",
+    "draft": "Draft"
+  },
+  "notifications": {
+    "empty": "No notifications yet",
+    "markRead": "Mark as Read",
+    "viewAll": "View All",
+    "markAllRead": "Mark All as Read",
+    "newMessage": "New message",
+    "sessionReminder": "Session reminder",
+    "progressUpdate": "Progress update"
+  }
+}

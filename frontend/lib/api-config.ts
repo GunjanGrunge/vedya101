@@ -26,15 +26,29 @@ export const API_ENDPOINTS = {
   teachingChat: `${API_BASE_URL}/teaching/chat`,
   teachingTts: `${API_BASE_URL}/teaching/tts`,
   teachingDiagram: `${API_BASE_URL}/teaching/generate-diagram`,
+  generateDiagramExcalidraw: `${API_BASE_URL}/teaching/generate-diagram`,
   executeCode: `${API_BASE_URL}/teaching/execute-code`,
+
+  // Blackboard (Epic 4)
+  explainAnnotation: `${API_BASE_URL}/teaching/explain-annotation`,
+  sessionBlackboard: (sessionId: string) => `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/blackboard`,
+  userBlackboards: (clerkId: string) => `${API_BASE_URL}/users/blackboards?clerk_user_id=${encodeURIComponent(clerkId)}`,
 
   // User & Onboarding
   userRegister: `${API_BASE_URL}/users/register`,
   userByClerk: (clerkId: string) => `${API_BASE_URL}/users/clerk/${clerkId}`,
+  freemiumStatus: (clerkId: string) => `${API_BASE_URL}/users/freemium-status?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  sessionEnd: `${API_BASE_URL}/users/session-end`,
   onboardingStatus: (clerkId: string) => `${API_BASE_URL}/users/onboarding-status?clerk_user_id=${encodeURIComponent(clerkId)}`,
   onboardingData: (clerkId: string) => `${API_BASE_URL}/users/onboarding-data?clerk_user_id=${encodeURIComponent(clerkId)}`,
   onboardingSave: `${API_BASE_URL}/users/onboarding`,
   planReadyMessage: `${API_BASE_URL}/settings/plan-ready-message`,
+
+  // Orgs (Story 1.3 & 1.4)
+  orgRegister: `${API_BASE_URL}/orgs/register`,
+  orgInvite: `${API_BASE_URL}/orgs/invite`,
+  orgMe: (clerkId: string) => `${API_BASE_URL}/orgs/me?clerk_user_id=${encodeURIComponent(clerkId)}`,
+  userProductContext: (clerkId: string) => `${API_BASE_URL}/users/product-context?clerk_user_id=${encodeURIComponent(clerkId)}`,
 
   // Admin (requires admin email)
   adminCheck: (clerkId: string) => `${API_BASE_URL}/admin/check?clerk_user_id=${encodeURIComponent(clerkId)}`,

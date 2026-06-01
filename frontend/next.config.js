@@ -1,4 +1,9 @@
 const path = require('path');
+const createNextIntlPlugin = require('next-intl/plugin');
+const withNextIntl = createNextIntlPlugin('./i18n.ts');
+
+const SKIP_AUTH = process.env.NEXT_PUBLIC_SKIP_AUTH === 'true';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
@@ -8,7 +13,6 @@ const nextConfig = {
       { protocol: 'https', hostname: 'images.unsplash.com', pathname: '/**' },
     ],
   },
-  // Silence workspace root inference warning on multi-lockfile monorepo style layout
   outputFileTracingRoot: path.join(__dirname),
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
@@ -19,6 +23,18 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  // In SKIP_AUTH / mock-testing mode, replace @clerk/nextjs with a lightweight
+  // mock so the app renders without real Clerk credentials.
+  webpack: (config) => {
+    if (SKIP_AUTH) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        '@clerk/nextjs': path.resolve(__dirname, 'lib/clerk-mock.tsx'),
+        '@clerk/nextjs/server': path.resolve(__dirname, 'lib/clerk-mock.tsx'),
+      };
+    }
+    return config;
+  },
 }
 
-module.exports = nextConfig
+module.exports = withNextIntl(nextConfig)

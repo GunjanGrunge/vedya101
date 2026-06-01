@@ -72,7 +72,9 @@ prometheus-client>=0.15.0
 # Email packages
 sendgrid>=6.9.0
 smtplib2>=0.2.1
-boto3>=1.26.0  # AWS SDK for SES verification
+boto3>=1.26.0  # AWS SDK for SES verification and S3 uploads (Stories 3.3, 3.4)
+pypdf>=3.0.0  # PDF text extraction (Story 3.4)
+python-docx>=0.8.11  # DOCX text extraction (Story 3.4)
 
 # Security packages
 cryptography>=38.0.0

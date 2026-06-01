@@ -6,6 +6,7 @@ import 'bootstrap-icons/font/bootstrap-icons.css'
 import LenisProvider from '../components/LenisProvider'
 import OnboardingGate from '../components/OnboardingGate'
 import ReduxProvider from '../components/ReduxProvider'
+import SessionLifecycle from '../components/SessionLifecycle'
 
 const inter = Inter({ subsets: ['latin'] })
 const poppins = Poppins({ 
@@ -43,7 +44,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider>
+    <ClerkProvider afterSignOutUrl="/sign-in">
       <html lang="en">
         <head>
           <link
@@ -62,6 +63,7 @@ export default function RootLayout({
               <div className="min-h-screen">
                 {children}
                 <OnboardingGate />
+                <SessionLifecycle />
               </div>
             </LenisProvider>
           </ReduxProvider>

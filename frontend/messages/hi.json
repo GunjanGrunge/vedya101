@@ -1,0 +1,109 @@
+{
+  "nav": {
+    "dashboard": "डैशबोर्ड",
+    "learn": "सीखें",
+    "settings": "सेटिंग्स",
+    "logout": "साइन आउट",
+    "notifications": "सूचनाएं",
+    "home": "होम",
+    "pricing": "मूल्य निर्धारण",
+    "faq": "अक्सर पूछे जाने वाले प्रश्न",
+    "contact": "संपर्क करें"
+  },
+  "auth": {
+    "signIn": "साइन इन",
+    "signUp": "साइन अप",
+    "email": "ईमेल",
+    "password": "पासवर्ड",
+    "forgotPassword": "पासवर्ड भूल गए?",
+    "continueWithGoogle": "Google के साथ जारी रखें",
+    "alreadyHaveAccount": "पहले से खाता है?",
+    "dontHaveAccount": "खाता नहीं है?"
+  },
+  "dashboard": {
+    "welcome": "वापस स्वागत है",
+    "myPlan": "मेरी शिक्षण योजना",
+    "progress": "प्रगति",
+    "recentSessions": "हाल के सत्र",
+    "startLearning": "सीखना शुरू करें",
+    "noPlans": "अभी तक कोई शिक्षण योजना नहीं",
+    "createPlan": "योजना बनाएं",
+    "totalSessions": "कुल सत्र",
+    "hoursLearned": "सीखे गए घंटे",
+    "achievementsEarned": "अर्जित उपलब्धियां"
+  },
+  "learning": {
+    "startSession": "सत्र शुरू करें",
+    "continueLesson": "पाठ जारी रखें",
+    "assessment": "मूल्यांकन",
+    "complete": "पूर्ण",
+    "nextModule": "अगला मॉड्यूल",
+    "previousModule": "पिछला मॉड्यूल",
+    "askQuestion": "प्रश्न पूछें...",
+    "typeMessage": "संदेश लिखें...",
+    "sendMessage": "भेजें",
+    "generating": "उत्तर तैयार हो रहा है...",
+    "sessionEnded": "सत्र समाप्त"
+  },
+  "onboarding": {
+    "step1": "चरण 1: व्यक्तिगत विवरण",
+    "step2": "चरण 2: शिक्षण प्राथमिकताएं",
+    "name": "पूरा नाम",
+    "age": "आयु",
+    "grade": "कक्षा / ग्रेड",
+    "subject": "पसंदीदा विषय",
+    "learningStyle": "शिक्षण शैली",
+    "welcome": "VEDYA में आपका स्वागत है!",
+    "letsGetStarted": "चलिए शुरू करते हैं",
+    "completeProfile": "अपनी प्रोफ़ाइल पूरी करें",
+    "almostDone": "लगभग हो गया!",
+    "finish": "सेटअप पूरा करें"
+  },
+  "common": {
+    "save": "सहेजें",
+    "cancel": "रद्द करें",
+    "submit": "जमा करें",
+    "loading": "लोड हो रहा है...",
+    "error": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "success": "सफलता!",
+    "confirm": "पुष्टि करें",
+    "delete": "हटाएं",
+    "edit": "संपादित करें",
+    "view": "देखें",
+    "back": "वापस",
+    "next": "अगला",
+    "close": "बंद करें",
+    "search": "खोजें",
+    "filter": "फ़िल्टर",
+    "refresh": "ताज़ा करें",
+    "learnMore": "और जानें",
+    "getStarted": "शुरू करें",
+    "startLearning": "सीखना शुरू करें"
+  },
+  "freemium": {
+    "upgradePrompt": "असीमित शिक्षण सत्र और सभी विषयों के लिए अपग्रेड करें।",
+    "limitReached": "आप अपनी निःशुल्क योजना की सीमा तक पहुंच गए हैं।",
+    "upgrade": "अभी अपग्रेड करें",
+    "sessionLimitReached": "सत्र सीमा समाप्त",
+    "subjectLimitReached": "विषय सीमा समाप्त",
+    "hoursRemaining": "{hours} घंटे शेष",
+    "upgradeToday": "असीमित पहुंच के लिए आज अपग्रेड करें"
+  },
+  "content": {
+    "pendingReview": "समीक्षा लंबित",
+    "approved": "स्वीकृत",
+    "rejected": "अस्वीकृत",
+    "underReview": "समीक्षाधीन",
+    "published": "प्रकाशित",
+    "draft": "ड्राफ्ट"
+  },
+  "notifications": {
+    "empty": "अभी तक कोई सूचना नहीं",
+    "markRead": "पढ़ा हुआ चिह्नित करें",
+    "viewAll": "सभी देखें",
+    "markAllRead": "सभी पढ़ा हुआ चिह्नित करें",
+    "newMessage": "नया संदेश",
+    "sessionReminder": "सत्र अनुस्मारक",
+    "progressUpdate": "प्रगति अपडेट"
+  }
+}

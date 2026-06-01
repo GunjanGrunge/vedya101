@@ -1,0 +1,109 @@
+{
+  "nav": {
+    "dashboard": "[ta] Dashboard",
+    "learn": "[ta] Learn",
+    "settings": "[ta] Settings",
+    "logout": "[ta] Sign Out",
+    "notifications": "[ta] Notifications",
+    "home": "[ta] Home",
+    "pricing": "[ta] Pricing",
+    "faq": "[ta] FAQ",
+    "contact": "[ta] Contact"
+  },
+  "auth": {
+    "signIn": "[ta] Sign In",
+    "signUp": "[ta] Sign Up",
+    "email": "[ta] Email",
+    "password": "[ta] Password",
+    "forgotPassword": "[ta] Forgot Password?",
+    "continueWithGoogle": "[ta] Continue with Google",
+    "alreadyHaveAccount": "[ta] Already have an account?",
+    "dontHaveAccount": "[ta] Don't have an account?"
+  },
+  "dashboard": {
+    "welcome": "[ta] Welcome back",
+    "myPlan": "[ta] My Learning Plan",
+    "progress": "[ta] Progress",
+    "recentSessions": "[ta] Recent Sessions",
+    "startLearning": "[ta] Start Learning",
+    "noPlans": "[ta] No learning plans yet",
+    "createPlan": "[ta] Create a Plan",
+    "totalSessions": "[ta] Total Sessions",
+    "hoursLearned": "[ta] Hours Learned",
+    "achievementsEarned": "[ta] Achievements Earned"
+  },
+  "learning": {
+    "startSession": "[ta] Start Session",
+    "continueLesson": "[ta] Continue Lesson",
+    "assessment": "[ta] Assessment",
+    "complete": "[ta] Complete",
+    "nextModule": "[ta] Next Module",
+    "previousModule": "[ta] Previous Module",
+    "askQuestion": "[ta] Ask a question...",
+    "typeMessage": "[ta] Type a message...",
+    "sendMessage": "[ta] Send",
+    "generating": "[ta] Generating response...",
+    "sessionEnded": "[ta] Session Ended"
+  },
+  "onboarding": {
+    "step1": "[ta] Step 1: Personal Details",
+    "step2": "[ta] Step 2: Learning Preferences",
+    "name": "[ta] Full Name",
+    "age": "[ta] Age",
+    "grade": "[ta] Grade / Class",
+    "subject": "[ta] Preferred Subject",
+    "learningStyle": "[ta] Learning Style",
+    "welcome": "[ta] Welcome to VEDYA!",
+    "letsGetStarted": "[ta] Let's get started",
+    "completeProfile": "[ta] Complete Your Profile",
+    "almostDone": "[ta] Almost Done!",
+    "finish": "[ta] Finish Setup"
+  },
+  "common": {
+    "save": "[ta] Save",
+    "cancel": "[ta] Cancel",
+    "submit": "[ta] Submit",
+    "loading": "[ta] Loading...",
+    "error": "[ta] An error occurred. Please try again.",
+    "success": "[ta] Success!",
+    "confirm": "[ta] Confirm",
+    "delete": "[ta] Delete",
+    "edit": "[ta] Edit",
+    "view": "[ta] View",
+    "back": "[ta] Back",
+    "next": "[ta] Next",
+    "close": "[ta] Close",
+    "search": "[ta] Search",
+    "filter": "[ta] Filter",
+    "refresh": "[ta] Refresh",
+    "learnMore": "[ta] Learn More",
+    "getStarted": "[ta] Get Started",
+    "startLearning": "[ta] Start Learning"
+  },
+  "freemium": {
+    "upgradePrompt": "[ta] Upgrade to unlock unlimited learning sessions and all subjects.",
+    "limitReached": "[ta] You have reached your free plan limit.",
+    "upgrade": "[ta] Upgrade Now",
+    "sessionLimitReached": "[ta] Session limit reached",
+    "subjectLimitReached": "[ta] Subject limit reached",
+    "hoursRemaining": "[ta] {hours} hours remaining",
+    "upgradeToday": "[ta] Upgrade today for unlimited access"
+  },
+  "content": {
+    "pendingReview": "[ta] Pending Review",
+    "approved": "[ta] Approved",
+    "rejected": "[ta] Rejected",
+    "underReview": "[ta] Under Review",
+    "published": "[ta] Published",
+    "draft": "[ta] Draft"
+  },
+  "notifications": {
+    "empty": "[ta] No notifications yet",
+    "markRead": "[ta] Mark as Read",
+    "viewAll": "[ta] View All",
+    "markAllRead": "[ta] Mark All as Read",
+    "newMessage": "[ta] New message",
+    "sessionReminder": "[ta] Session reminder",
+    "progressUpdate": "[ta] Progress update"
+  }
+}

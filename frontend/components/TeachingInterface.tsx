@@ -7,6 +7,8 @@ import { API_ENDPOINTS } from '../lib/api-config'
 import Sketchboard from './Sketchboard'
 import DrawioPanel from './DrawioPanel'
 import VoiceTeacherPanel from './VoiceTeacherPanel'
+import AIBlackboard from './AIBlackboard'
+import type { ExcalidrawElement } from '../types/blackboard'
 
 const CHAT_WIDTH_DEFAULT_PX = 380
 const CHAT_WIDTH_MIN_PX = 280
@@ -51,6 +53,9 @@ export default function TeachingInterface({ planId, moduleId }: TeachingInterfac
   const [blackboardImageKey, setBlackboardImageKey] = useState(0)
   /** When the AI asks to "point to" / "mark" on the blackboard, we put that image here so the user can draw on it in the Notebook */
   const [notebookBackgroundImageUrl, setNotebookBackgroundImageUrl] = useState<string | null>(null)
+  // Excalidraw blackboard (Epic 4)
+  const [blackboardElements, setBlackboardElements] = useState<ExcalidrawElement[]>([])
+  const [blackboardVisible, setBlackboardVisible] = useState(false)
   const [showMiddleSection, setShowMiddleSection] = useState(true)
   const [showRightSection, setShowRightSection] = useState(true)
   // Voice: input (mic) and output (TTS)
@@ -253,7 +258,24 @@ export default function TeachingInterface({ planId, moduleId }: TeachingInterfac
 
       const data = await response.json()
       console.log("Visual generation response:", data) // Log full response for debugging
-      
+
+      // Excalidraw format — show AI Blackboard panel (Epic 4)
+      if (data.success && data.format === 'excalidraw' && Array.isArray(data.elements)) {
+        console.log(`🎨 Excalidraw diagram: ${data.elements.length} elements for: ${concept}`)
+        setBlackboardElements(data.elements)
+        setBlackboardVisible(true)
+        // Add a "Show Diagram" message to chat
+        const showMsg: TeachingMessage = {
+          id: Date.now().toString(),
+          content: `I've drawn a diagram for "${concept}" on the blackboard. You can annotate it and ask me about specific parts.`,
+          sender: 'teacher',
+          timestamp: new Date(),
+          type: 'text',
+        }
+        setMessages((prev) => [...prev, showMsg])
+        return
+      }
+
       if (data.success && data.diagram_url) {
         console.log("🎨 Generated diagram URL (chat visual suppressed):", data.diagram_url)
         // We still generate the diagram for API consumers, but we no longer

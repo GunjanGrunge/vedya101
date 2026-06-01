@@ -780,7 +780,175 @@ class NotificationAgent(VEDYAAgent):
 
 class TeachingAssistantAgent(VEDYAAgent):
     """AI Teaching Assistant that provides real-time guidance and personalized instruction."""
-    
+
+    # ── Story 2.1: Proficiency Band Constants ─────────────────────────────────
+    PROFICIENCY_BANDS: List[str] = [
+        "Beginner", "Amateur", "Seasoned", "Professional", "Ultra Pro"
+    ]
+
+    # Band-specific system prompt directives (Story 2.1 Task 2.4)
+    _BAND_DIRECTIVES: Dict[str, str] = {
+        "Beginner":     "Use simple language, short sentences, concrete analogies. Avoid jargon entirely.",
+        "Amateur":      "Use accessible language. Introduce technical terms with brief definitions.",
+        "Seasoned":     "Use standard technical vocabulary. Assume familiarity with foundational concepts.",
+        "Professional": "Use precise domain terminology. Focus on nuance, edge cases, and best practices.",
+        "Ultra Pro":    "Engage as a peer. Use advanced vocabulary, cite trade-offs, assume deep expertise.",
+    }
+
+    def infer_proficiency_band(self, signals: List[Dict]) -> str:
+        """
+        Heuristic proficiency inference from interaction signals.  No LLM call.
+
+        Signal dict shape:
+            { "message_length": int, "is_correct": bool | None,
+              "is_clarifying": bool, "timestamp_ms": int }
+
+        Scoring:
+            correct answer   → +2
+            clarifying q     → -1
+            long msg (>80 ch)→ +1
+
+        Band mapping (cumulative score):
+            ≤0   → Beginner
+            1–3  → Amateur
+            4–6  → Seasoned
+            7–9  → Professional
+            ≥10  → Ultra Pro
+        """
+        score = 0
+        for sig in signals:
+            is_correct = sig.get("is_correct")
+            if is_correct is True:
+                score += 2
+            if sig.get("is_clarifying"):
+                score -= 1
+            if sig.get("message_length", 0) > 80:
+                score += 1
+
+        if score <= 0:
+            return "Beginner"
+        elif score <= 3:
+            return "Amateur"
+        elif score <= 6:
+            return "Seasoned"
+        elif score <= 9:
+            return "Professional"
+        else:
+            return "Ultra Pro"
+
+    def apply_proficiency_to_system_prompt(self, band: str, base_prompt: str) -> str:
+        """Append band-specific directive to the TA system prompt."""
+        directive = self._BAND_DIRECTIVES.get(band, "")
+        if directive:
+            return f"{base_prompt}\n\nPROFICIENCY CALIBRATION ({band}): {directive}"
+        return base_prompt
+
+    # ── Story 2.2: Continuous Adaptation Helpers ──────────────────────────────
+
+    def compute_adaptation_direction(self, signals: List[Dict], current_band: str) -> Dict:
+        """
+        Compute the adaptation direction from the rolling signal window.
+
+        Signal dict shape (2.2):
+            { "correct": bool | None, "response_time_ms": int,
+              "is_clarifying": bool, "turn": int }
+
+        Rules (evaluated on last 3 signals only):
+            confusion  : ≥2 of last 3 have correct=False or is_clarifying=True → "simplify"
+            confidence : all 3 have correct=True AND avg response_time_ms < 5000 → "advance"
+            default    : "hold"
+        """
+        recent = signals[-3:] if len(signals) >= 3 else signals
+        if len(recent) < 3:
+            return {"direction": "hold", "reason": "insufficient_signals"}
+
+        confusion_count = sum(
+            1 for s in recent
+            if s.get("correct") is False or s.get("is_clarifying") is False is False
+            # re-express cleanly:
+        )
+        # Recompute cleanly
+        confusion_count = sum(
+            1 for s in recent
+            if (s.get("correct") is False) or (s.get("is_clarifying") is True)
+        )
+        if confusion_count >= 2:
+            return {"direction": "simplify", "reason": "confusion_detected"}
+
+        all_correct = all(s.get("correct") is True for s in recent)
+        avg_time = sum(s.get("response_time_ms", 5000) for s in recent) / len(recent)
+        if all_correct and avg_time < 5000:
+            return {"direction": "advance", "reason": "high_confidence"}
+
+        return {"direction": "hold", "reason": "stable"}
+
+    def shift_proficiency_band(self, current_band: str, direction: str) -> str:
+        """Shift the proficiency band one step in the given direction (clamped at ends)."""
+        bands = self.PROFICIENCY_BANDS
+        if current_band not in bands:
+            return current_band
+        idx = bands.index(current_band)
+        if direction == "simplify":
+            return bands[max(0, idx - 1)]
+        elif direction == "advance":
+            return bands[min(len(bands) - 1, idx + 1)]
+        return current_band
+
+    def build_adaptation_system_prompt(self, band: str, direction: str, concept: str) -> str:
+        """Compose the TA system prompt with band + pacing directive (Story 2.2 Task 2.6)."""
+        base = f"You are an expert AI instructor."
+        base = self.apply_proficiency_to_system_prompt(band, base)
+        if direction == "simplify":
+            base += f" Re-explain '{concept}' using a simpler analogy before proceeding to new material."
+        elif direction == "advance":
+            base += f" The student is ready for more depth. Advance to the next sub-concept without re-explaining basics."
+        return base
+
+    # ── Story 2.4: Path Reshaping Helpers ────────────────────────────────────
+
+    def compute_path_reshaping(self, score_percentage: float, topic: str, current_band: str) -> Dict:
+        """
+        Compute learning path reshaping based on assessment score.
+
+        Thresholds:
+            < 60  → revisit
+            60-84 → continue
+            ≥ 85  → advance
+        """
+        if score_percentage < 60:
+            return {
+                "action": "revisit",
+                "topic": topic,
+                "reason": "low_score",
+                "recommendation": f"Re-teach {topic} before advancing",
+            }
+        elif score_percentage >= 85:
+            return {
+                "action": "advance",
+                "topic": topic,
+                "reason": "mastered",
+                "recommendation": f"Mark {topic} as mastered; proceed to next module",
+            }
+        else:
+            return {
+                "action": "continue",
+                "topic": topic,
+                "reason": "partial",
+                "recommendation": f"Proceed with supplementary review of {topic} weak points",
+            }
+
+    def update_mastery_map(self, session_state: Dict, topic: str, action: str) -> Dict:
+        """Update mastered_topics / revisit_topics lists in session state."""
+        if action == "advance":
+            mastered = session_state.setdefault("mastered_topics", [])
+            if topic not in mastered:
+                mastered.append(topic)
+        elif action == "revisit":
+            revisit = session_state.setdefault("revisit_topics", [])
+            if topic not in revisit:
+                revisit.append(topic)
+        return session_state
+
     def __init__(self):
         model = os.getenv("TEACHING_ASSISTANT_MODEL", "o4-mini")
         # Use default temperature (1.0) for o4-mini model which doesn't support custom temperatures
@@ -943,6 +1111,11 @@ BLACKBOARD_FEEDBACK: <one DALL·E prompt to show the same image with the correct
         blackboard_draw = session_context.get("user_requested_blackboard_drawing") and session_context.get("blackboard_image_ready")
         draw_subject_ctx = session_context.get("draw_subject", "")
         
+        # Story 2.1 / 2.2: retrieve proficiency band and adaptation direction from session context
+        proficiency_band = session_context.get("proficiency_band")
+        adaptation_direction = session_context.get("adaptation_direction", "hold")
+        current_concept = session_context.get("current_concept", current_module.lower().replace(" ", "_"))
+
         if blackboard_draw and draw_subject_ctx:
             system_prompt = f"""You are a friendly AI tutor. The student asked for a drawing: "{draw_subject_ctx}".
 
@@ -951,6 +1124,50 @@ We are already displaying that drawing on the BLACKBOARD (the panel next to this
 - Reply in 1-2 short sentences: acknowledge that you've drawn it on the blackboard and invite them to look at it.
 - Stay on the student's topic. If they asked for circles and a line (or an apple, or a simple shape), do NOT pivot to neural networks or AI unless they explicitly asked about that.
 - End with one brief, relevant question if natural (e.g. "What would you like to try next?" or "Want me to draw something else?")."""
+        elif proficiency_band and adaptation_direction != "hold":
+            # Story 2.2: use adaptive prompt when a direction is active
+            system_prompt = self.build_adaptation_system_prompt(
+                proficiency_band, adaptation_direction, current_concept
+            )
+            system_prompt += f"""
+
+You are teaching {subject}, specifically: {current_module}.
+- Student's Learning Style: {learning_style}
+- Respond to what the student ACTUALLY asked.
+- End each response with a thoughtful question.
+- Keep responses under 5 sentences.
+- NEVER respond with ASCII art or text-based drawings."""
+        elif proficiency_band:
+            # Story 2.1: band set but no active direction change
+            base = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
+
+CONTEXT:
+- Student's Learning Style: {learning_style}
+- Difficulty Level: {difficulty}
+- Current Focus: {current_module}
+
+TEACHING GUIDELINES:
+1. Be conversational and highly interactive - like a one-on-one tutor
+2. Present information in small, digestible chunks (2-3 sentences max)
+3. Analyze the student's questions to gauge their understanding
+4. If they seem confused, simplify and provide different examples
+5. If they show understanding, introduce a slightly more advanced concept
+6. Use the student's preferred learning style ({learning_style})
+7. Adjust explanations to {difficulty} level
+8. Keep all responses under 5 sentences
+
+RESPONSE INSTRUCTIONS:
+- Respond to what the student ACTUALLY asked. If they asked about an everyday object (e.g. an apple) or a simple drawing (circles, shapes), stay on that topic. Do NOT force the conversation to neural networks or AI unless they asked for that.
+- End each response with a thoughtful question to maintain dialogue
+- Use concrete examples related to the student's current topic
+- Be encouraging and supportive
+- Don't overwhelm with information
+- NEVER present multiple concepts at once
+- NEVER use extensive numbered lists or bullet points
+- NEVER respond with ASCII art or text-based drawings when they asked for an image—we show images on the blackboard instead
+
+Remember: You are having a conversation with the student, not delivering a lecture."""
+            system_prompt = self.apply_proficiency_to_system_prompt(proficiency_band, base)
         else:
             system_prompt = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
 
@@ -1056,7 +1273,12 @@ Remember: You are having a conversation with the student, not delivering a lectu
             }
             return
         
-        system_prompt = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
+        # Story 2.1 / 2.2: proficiency-aware and adaptation-aware prompt for streaming path
+        proficiency_band = session_context.get("proficiency_band")
+        adaptation_direction = session_context.get("adaptation_direction", "hold")
+        current_concept = session_context.get("current_concept", current_module.lower().replace(" ", "_"))
+
+        base_stream_prompt = f"""You are an expert AI instructor teaching {subject}, specifically the module: {current_module}.
 
 CONTEXT:
 - Student's Learning Style: {learning_style}
@@ -1083,6 +1305,15 @@ RESPONSE INSTRUCTIONS:
 - Adjust your teaching pace based on the student's responses
 
 Remember: You are having a conversation with the student, not delivering a lecture."""
+
+        if proficiency_band and adaptation_direction != "hold":
+            system_prompt = self.build_adaptation_system_prompt(
+                proficiency_band, adaptation_direction, current_concept
+            ) + f"\n\nTeaching {subject} / {current_module}. Learning style: {learning_style}. Keep responses under 5 sentences."
+        elif proficiency_band:
+            system_prompt = self.apply_proficiency_to_system_prompt(proficiency_band, base_stream_prompt)
+        else:
+            system_prompt = base_stream_prompt
 
         try:
             messages = [

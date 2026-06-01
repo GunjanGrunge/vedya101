@@ -456,3 +456,19 @@
     clip-path: inset(0 0 0 0);
   }
 }
+
+/* AI Blackboard: Excalidraw SVG element fade-in with slight rise (Epic 4) */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 300ms ease-out forwards;
+  opacity: 0;
+}

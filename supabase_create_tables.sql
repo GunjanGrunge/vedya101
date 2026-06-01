@@ -55,3 +55,100 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Freemium tracking columns (Story 1.1)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier VARCHAR(50) DEFAULT 'freemium';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_hours_used FLOAT DEFAULT 0.0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subjects_accessed JSONB DEFAULT '[]';
+
+-- Organisation tables (Stories 1.3 & 1.4)
+-- Note: gen_random_uuid() requires pgcrypto extension (enabled by default in Supabase)
+CREATE TABLE IF NOT EXISTS orgs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    admin_clerk_user_id VARCHAR(255) NOT NULL,
+    seat_count INTEGER NOT NULL DEFAULT 1,
+    product_type VARCHAR(50) NOT NULL CHECK (product_type IN ('corporate', 'vocational')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS org_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    clerk_user_id VARCHAR(255),
+    role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'member')),
+    invited_email VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_orgs_admin_clerk_user_id ON orgs(admin_clerk_user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_org_id ON org_members(org_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_clerk_user_id ON org_members(clerk_user_id);
+
+-- Story 3.1: School AI Syllabus Generation — board/grade columns on learning_plans
+ALTER TABLE learning_plans ADD COLUMN IF NOT EXISTS board VARCHAR(50);
+ALTER TABLE learning_plans ADD COLUMN IF NOT EXISTS grade INTEGER;
+
+-- Story 3.2: Exam Prep Syllabus Generation — exam_type column on learning_plans
+ALTER TABLE learning_plans ADD COLUMN IF NOT EXISTS exam_type VARCHAR(20);
+
+-- Story 3.3: Org Content Upload Pipeline — org_content table
+CREATE TABLE IF NOT EXISTS org_content (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id VARCHAR(255) NOT NULL,
+  clerk_user_id VARCHAR(255) NOT NULL,
+  file_name VARCHAR(500) NOT NULL,
+  s3_key VARCHAR(1000) NOT NULL,
+  file_type VARCHAR(20) NOT NULL CHECK (file_type IN ('pdf','video','sop','manual','docx','txt')),
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_review','approved','rejected')),
+  file_size_bytes BIGINT,
+  teaching_plan_id UUID REFERENCES learning_plans(id),
+  uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_content_org_id ON org_content(org_id);
+CREATE INDEX IF NOT EXISTS idx_org_content_status ON org_content(status);
+
+-- Story 7.1: In-App Notification Infrastructure — notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  clerk_user_id VARCHAR NOT NULL,
+  type VARCHAR(50) NOT NULL,  -- 'progress' | 'reminder' | 'admin_alert' | 'moderation'
+  title VARCHAR(200) NOT NULL,
+  body TEXT NOT NULL,
+  read BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_clerk_user_id ON notifications(clerk_user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(clerk_user_id, read) WHERE read = false;
+
+-- Story 7.2: Inactivity tracking — last_active_at column on users
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ DEFAULT NOW();
+
+-- ── Epic 5: Content Safety & Moderation Pipeline ──────────────────────────
+
+-- Story 5.1: Age-Appropriate Content Filtering — app_settings seed
+INSERT INTO app_settings (key, value)
+VALUES ('content_filter_enabled', 'true')
+ON CONFLICT (key) DO NOTHING;
+
+-- Story 5.2: Org Content Automated Moderation — moderation metadata columns
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS moderation_risk_level VARCHAR(20) DEFAULT 'pending';
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS moderation_completed_at TIMESTAMPTZ;
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS moderation_notes TEXT;
+
+-- Story 5.3: HITL Review Workflow — review tracking columns
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS content_review_notes TEXT;
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS reviewer_id VARCHAR(255);
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+
+-- Story 5.4: Tiered Provisional Publish — provisional_published flag
+ALTER TABLE org_content ADD COLUMN IF NOT EXISTS provisional_published BOOLEAN DEFAULT false;
+
+-- Story 5.3: Extend status check constraint to include new HITL statuses
+-- Note: constraint alteration is not directly supported in all PG versions;
+-- the application layer enforces the allowed status values.
+-- Valid status values: pending, in_review, needs_clarification, approved, rejected

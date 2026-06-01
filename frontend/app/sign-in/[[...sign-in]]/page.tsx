@@ -1,3 +1,11 @@
+// frontend/app/sign-in/[[...sign-in]]/page.tsx
+//
+// Password reset: Clerk's <SignIn /> component includes a built-in "Forgot password?" link.
+// Clicking it sends a reset email via Clerk. Clerk invalidates the existing session on password change.
+// No backend involvement required for password reset.
+//
+// Error messages: Clerk displays "Invalid credentials" style messages without revealing
+// whether the email exists in the system (account enumeration protection).
 import { SignIn } from '@clerk/nextjs'
 
 type PageProps = {
@@ -19,8 +27,9 @@ export default async function SignInPage({ params, searchParams }: PageProps) {
           <h1 className="text-2xl font-bold gradient-text mb-2">Welcome Back to VEDYA</h1>
           <p className="text-gray-600">Sign in to continue your learning journey</p>
         </div>
-        
-        <SignIn 
+
+        <SignIn
+          afterSignInUrl="/dashboard"
           appearance={{
             elements: {
               formButtonPrimary: "bg-gradient-to-r from-vedya-purple to-vedya-pink hover:from-vedya-purple/90 hover:to-vedya-pink/90",

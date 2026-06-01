@@ -9,10 +9,14 @@ import asyncio
 import asyncpg
 import logging
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse, urlunparse, quote
 from dotenv import load_dotenv
 from email_service import VedyaEmailService
+
+# Freemium tier limits
+FREEMIUM_SESSION_HOURS_LIMIT = 5
+FREEMIUM_SUBJECT_LIMIT = 2
 
 # Load environment variables
 load_dotenv()
@@ -1131,6 +1135,403 @@ class UserService:
             logger.error(f"Failed to grant achievement by email: {e}")
             return False
 
+    async def check_freemium_limits(self, clerk_user_id: str) -> Dict[str, Any]:
+        """Return freemium status for a user. Always returns a valid dict."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT subscription_tier,
+                       COALESCE(session_hours_used, 0.0) AS session_hours_used,
+                       COALESCE(subjects_accessed, '[]'::jsonb) AS subjects_accessed
+                FROM users WHERE clerk_user_id = $1
+                """,
+                clerk_user_id,
+            )
+            await conn.close()
+            if not row:
+                return {
+                    "tier": "freemium",
+                    "session_hours_used": 0.0,
+                    "session_hours_limit": FREEMIUM_SESSION_HOURS_LIMIT,
+                    "subjects_accessed": [],
+                    "subject_limit": FREEMIUM_SUBJECT_LIMIT,
+                    "can_start_session": True,
+                    "can_access_subject": True,
+                }
+            tier = row["subscription_tier"] or "freemium"
+            hours_used = float(row["session_hours_used"] or 0.0)
+            subjects_raw = row["subjects_accessed"]
+            if isinstance(subjects_raw, str):
+                try:
+                    subjects = json.loads(subjects_raw)
+                except Exception:
+                    subjects = []
+            else:
+                subjects = list(subjects_raw) if subjects_raw else []
+
+            if tier == "paid":
+                return {
+                    "tier": "paid",
+                    "session_hours_used": hours_used,
+                    "session_hours_limit": None,
+                    "subjects_accessed": subjects,
+                    "subject_limit": None,
+                    "can_start_session": True,
+                    "can_access_subject": True,
+                }
+            # freemium
+            can_start = hours_used < FREEMIUM_SESSION_HOURS_LIMIT
+            can_subject = len(subjects) < FREEMIUM_SUBJECT_LIMIT
+            return {
+                "tier": "freemium",
+                "session_hours_used": hours_used,
+                "session_hours_limit": FREEMIUM_SESSION_HOURS_LIMIT,
+                "subjects_accessed": subjects,
+                "subject_limit": FREEMIUM_SUBJECT_LIMIT,
+                "can_start_session": can_start,
+                "can_access_subject": can_subject,
+            }
+        except Exception as e:
+            logger.error("Failed to check freemium limits: %s", e)
+            # Fail open — don't block the user if DB is down
+            return {
+                "tier": "freemium",
+                "session_hours_used": 0.0,
+                "session_hours_limit": FREEMIUM_SESSION_HOURS_LIMIT,
+                "subjects_accessed": [],
+                "subject_limit": FREEMIUM_SUBJECT_LIMIT,
+                "can_start_session": True,
+                "can_access_subject": True,
+            }
+
+    async def record_session_end(self, clerk_user_id: str, duration_hours: float) -> bool:
+        """Increment session_hours_used for freemium users. Clears in-memory user_sessions entry."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute(
+                """
+                UPDATE users
+                SET session_hours_used = COALESCE(session_hours_used, 0.0) + $1,
+                    updated_at = NOW()
+                WHERE clerk_user_id = $2 AND (subscription_tier = 'freemium' OR subscription_tier IS NULL)
+                """,
+                duration_hours,
+                clerk_user_id,
+            )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error("Failed to record session end: %s", e)
+            return False
+
+    async def record_subject_access(self, clerk_user_id: str, subject: str) -> bool:
+        """Add a subject to subjects_accessed for freemium users if not already there."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                "SELECT subjects_accessed, subscription_tier FROM users WHERE clerk_user_id = $1",
+                clerk_user_id,
+            )
+            if not row or row["subscription_tier"] == "paid":
+                await conn.close()
+                return True
+            existing = list(row["subjects_accessed"] or [])
+            if subject not in existing:
+                existing.append(subject)
+                await conn.execute(
+                    "UPDATE users SET subjects_accessed = $1::jsonb, updated_at = NOW() WHERE clerk_user_id = $2",
+                    json.dumps(existing),
+                    clerk_user_id,
+                )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error("Failed to record subject access: %s", e)
+            return False
+
+    # =========================================================================
+    # STORY 7.1: In-App Notification Infrastructure
+    # =========================================================================
+
+    async def create_notification(self, clerk_user_id: str, type: str, title: str, body: str) -> dict:
+        """Create a new in-app notification for a user. Returns the created notification dict."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                INSERT INTO notifications (clerk_user_id, type, title, body)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, clerk_user_id, type, title, body, read, created_at
+                """,
+                clerk_user_id, type, title, body
+            )
+            await conn.close()
+            if not row:
+                return {}
+            return {
+                "id": str(row["id"]),
+                "clerk_user_id": row["clerk_user_id"],
+                "type": row["type"],
+                "title": row["title"],
+                "body": row["body"],
+                "read": row["read"],
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            }
+        except Exception as e:
+            logger.error("Failed to create notification: %s", e)
+            return {}
+
+    async def get_notifications(self, clerk_user_id: str, limit: int = 50) -> list:
+        """Get up to `limit` notifications for a user, most recent first."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT id, type, title, body, read, created_at
+                FROM notifications
+                WHERE clerk_user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                clerk_user_id, limit
+            )
+            await conn.close()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "type": r["type"],
+                    "title": r["title"],
+                    "body": r["body"],
+                    "read": r["read"],
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error("Failed to get notifications: %s", e)
+            return []
+
+    async def mark_notification_read(self, notification_id: str, clerk_user_id: str) -> bool:
+        """Mark a notification as read. Validates ownership. Returns True on success."""
+        try:
+            conn = await self.get_db_connection()
+            result = await conn.execute(
+                """
+                UPDATE notifications
+                SET read = true
+                WHERE id = $1::uuid AND clerk_user_id = $2
+                """,
+                notification_id, clerk_user_id
+            )
+            await conn.close()
+            return result and "UPDATE 1" in result
+        except Exception as e:
+            logger.error("Failed to mark notification read: %s", e)
+            return False
+
+    async def mark_all_notifications_read(self, clerk_user_id: str) -> int:
+        """Mark all unread notifications as read for a user. Returns count of rows updated."""
+        try:
+            conn = await self.get_db_connection()
+            result = await conn.execute(
+                """
+                UPDATE notifications
+                SET read = true
+                WHERE clerk_user_id = $1 AND read = false
+                """,
+                clerk_user_id
+            )
+            await conn.close()
+            # result looks like "UPDATE 5"
+            try:
+                count = int((result or "UPDATE 0").split()[-1])
+            except Exception:
+                count = 0
+            return count
+        except Exception as e:
+            logger.error("Failed to mark all notifications read: %s", e)
+            return 0
+
+    async def get_new_notifications(self, clerk_user_id: str, since) -> list:
+        """Get unread notifications created after `since` (datetime). Used for SSE streaming."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT id, type, title, body, read, created_at
+                FROM notifications
+                WHERE clerk_user_id = $1 AND created_at > $2 AND read = false
+                ORDER BY created_at ASC
+                """,
+                clerk_user_id, since
+            )
+            await conn.close()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "type": r["type"],
+                    "title": r["title"],
+                    "body": r["body"],
+                    "read": r["read"],
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error("Failed to get new notifications: %s", e)
+            return []
+
+    # =========================================================================
+    # STORY 7.2: Learner Progress & Session Reminder Notifications
+    # =========================================================================
+
+    async def update_last_active(self, clerk_user_id: str) -> None:
+        """Set last_active_at=NOW() on the users row for inactivity tracking."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute(
+                "UPDATE users SET last_active_at = NOW() WHERE clerk_user_id = $1",
+                clerk_user_id
+            )
+            await conn.close()
+        except Exception as e:
+            logger.error("Failed to update last_active_at: %s", e)
+
+    async def get_inactive_users(self, days: int = 3) -> list:
+        """Return list of clerk_user_id for users inactive for more than `days` days (non-cancelled)."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT clerk_user_id FROM users
+                WHERE last_active_at < NOW() - ($1 || ' days')::INTERVAL
+                  AND (subscription_tier != 'cancelled' OR subscription_tier IS NULL)
+                """,
+                str(days)
+            )
+            await conn.close()
+            return [r["clerk_user_id"] for r in rows if r.get("clerk_user_id")]
+        except Exception as e:
+            logger.error("Failed to get inactive users: %s", e)
+            return []
+
+    async def check_recent_reminder(self, clerk_user_id: str, days: int) -> bool:
+        """Return True if a 'reminder' notification was sent to user within last `days` days."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT id FROM notifications
+                WHERE clerk_user_id = $1
+                  AND type = 'reminder'
+                  AND created_at > NOW() - ($2 || ' days')::INTERVAL
+                LIMIT 1
+                """,
+                clerk_user_id, str(days)
+            )
+            await conn.close()
+            return row is not None
+        except Exception as e:
+            logger.error("Failed to check recent reminder: %s", e)
+            return False
+
+    async def get_parent_for_learner(self, learner_clerk_user_id: str) -> Optional[str]:
+        """Return the parent's clerk_user_id for a learner, or None if not linked / table missing."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                "SELECT parent_clerk_user_id FROM parent_child WHERE child_clerk_user_id = $1",
+                learner_clerk_user_id
+            )
+            await conn.close()
+            return row["parent_clerk_user_id"] if row else None
+        except Exception as e:
+            # Table may not exist yet (Story 2.5 not implemented) — degrade gracefully
+            logger.warning("parent_child table not available: %s", e)
+            return None
+
+    async def get_learner_name(self, clerk_user_id: str) -> str:
+        """Return the display name for a user (from users.name), defaulting to 'Learner'."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                "SELECT name FROM users WHERE clerk_user_id = $1",
+                clerk_user_id
+            )
+            await conn.close()
+            return (row["name"] or "Learner") if row else "Learner"
+        except Exception as e:
+            logger.error("Failed to get learner name: %s", e)
+            return "Learner"
+
+    # =========================================================================
+    # STORY 7.3: Admin Alert Notifications
+    # =========================================================================
+
+    async def get_org_admin_clerk_id(self, org_id) -> Optional[str]:
+        """Return the admin's clerk_user_id for the given org_id, or None if not found."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                "SELECT admin_clerk_user_id FROM orgs WHERE id = $1",
+                str(org_id)
+            )
+            await conn.close()
+            return row["admin_clerk_user_id"] if row else None
+        except Exception as e:
+            logger.warning("get_org_admin_clerk_id failed (orgs table may not exist yet): %s", e)
+            return None
+
+    async def get_org_member_count(self, org_id) -> int:
+        """Return the number of members in an org. Returns 0 on error."""
+        try:
+            conn = await self.get_db_connection()
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM org_members WHERE org_id = $1",
+                str(org_id)
+            )
+            await conn.close()
+            return int(count or 0)
+        except Exception as e:
+            logger.warning("get_org_member_count failed (org_members table may not exist yet): %s", e)
+            return 0
+
+    async def get_org(self, org_id) -> dict:
+        """Return the org record dict (including seat_count, worker_licence_count). Returns {} on error."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                "SELECT * FROM orgs WHERE id = $1",
+                str(org_id)
+            )
+            await conn.close()
+            return dict(row) if row else {}
+        except Exception as e:
+            logger.warning("get_org failed (orgs table may not exist yet): %s", e)
+            return {}
+
+    async def check_recent_admin_alert(self, clerk_user_id: str, title_contains: str, hours: int = 24) -> bool:
+        """Return True if an admin_alert with title containing `title_contains` was sent within `hours` hours."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT id FROM notifications
+                WHERE clerk_user_id = $1
+                  AND type = 'admin_alert'
+                  AND title LIKE $2
+                  AND created_at > NOW() - ($3 || ' hours')::INTERVAL
+                LIMIT 1
+                """,
+                clerk_user_id, f"%{title_contains}%", str(hours)
+            )
+            await conn.close()
+            return row is not None
+        except Exception as e:
+            logger.error("Failed to check recent admin alert: %s", e)
+            return False
+
     async def check_achievements(self, clerk_user_id: str):
         """
         Check and award standard achievements based on user progress.
@@ -1167,6 +1568,517 @@ class UserService:
                 
         except Exception as e:
             logger.error(f"Error checking achievements: {e}")
+
+    # -------------------------------------------------------------------------
+    # Story 3.1: School AI Syllabus Generation
+    # -------------------------------------------------------------------------
+
+    async def get_school_syllabus(
+        self,
+        clerk_user_id: str,
+        board: str,
+        grade: int,
+        subject: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return existing school syllabus plan for the board/grade/subject combo, or None."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return None
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT id, title, summary, status, plan_data, board, grade, created_at, updated_at,
+                       COALESCE(overall_progress, 0) AS overall_progress
+                FROM learning_plans
+                WHERE user_id = $1::uuid
+                  AND board = $2
+                  AND grade = $3
+                  AND title ILIKE $4
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                user["id"],
+                board,
+                grade,
+                f"%{subject}%",
+            )
+            await conn.close()
+            if not row:
+                return None
+            plan_data = row.get("plan_data")
+            if isinstance(plan_data, str):
+                try:
+                    plan_data = json.loads(plan_data) if plan_data else {}
+                except Exception:
+                    plan_data = {}
+            return {
+                "id": str(row["id"]),
+                "title": row.get("title") or "",
+                "summary": row.get("summary") or "",
+                "status": row.get("status") or "active",
+                "plan_data": plan_data or {},
+                "board": row.get("board"),
+                "grade": row.get("grade"),
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+                "overall_progress": int(row.get("overall_progress") or 0),
+            }
+        except Exception as e:
+            logger.error("Failed to get school syllabus: %s", e)
+            return None
+
+    async def save_syllabus_plan(
+        self,
+        clerk_user_id: str,
+        title: str,
+        board: str,
+        grade: int,
+        plan_data: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist a generated school syllabus as a learning_plans row. Returns plan id."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return None
+            conn = await self.get_db_connection()
+            plan_id = await conn.fetchval(
+                """
+                INSERT INTO learning_plans (user_id, title, summary, status, plan_data, board, grade)
+                VALUES ($1::uuid, $2, $3, 'active', $4::jsonb, $5, $6)
+                RETURNING id
+                """,
+                user["id"],
+                title,
+                f"AI-generated syllabus for {title}",
+                json.dumps(plan_data),
+                board,
+                grade,
+            )
+            await conn.close()
+            return str(plan_id) if plan_id else None
+        except Exception as e:
+            logger.error("Failed to save syllabus plan: %s", e)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Story 3.2: Exam Prep (NEET) Syllabus
+    # -------------------------------------------------------------------------
+
+    async def get_exam_prep_plan(
+        self,
+        clerk_user_id: str,
+        exam_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return existing exam prep plan for the user/exam_type, or None."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return None
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT id, title, summary, status, plan_data, exam_type, created_at, updated_at,
+                       COALESCE(overall_progress, 0) AS overall_progress
+                FROM learning_plans
+                WHERE user_id = $1::uuid AND exam_type = $2 AND status = 'active'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                user["id"],
+                exam_type,
+            )
+            await conn.close()
+            if not row:
+                return None
+            plan_data = row.get("plan_data")
+            if isinstance(plan_data, str):
+                try:
+                    plan_data = json.loads(plan_data) if plan_data else {}
+                except Exception:
+                    plan_data = {}
+            return {
+                "id": str(row["id"]),
+                "title": row.get("title") or "",
+                "status": row.get("status") or "active",
+                "plan_data": plan_data or {},
+                "exam_type": row.get("exam_type"),
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "overall_progress": int(row.get("overall_progress") or 0),
+            }
+        except Exception as e:
+            logger.error("Failed to get exam prep plan: %s", e)
+            return None
+
+    async def save_exam_prep_plan(
+        self,
+        clerk_user_id: str,
+        plan_data: Dict[str, Any],
+        exam_type: str = "NEET",
+    ) -> Optional[str]:
+        """Persist an exam prep plan as a learning_plans row. Returns plan id."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return None
+            conn = await self.get_db_connection()
+            plan_id = await conn.fetchval(
+                """
+                INSERT INTO learning_plans (user_id, title, summary, status, plan_data, exam_type)
+                VALUES ($1::uuid, $2, $3, 'active', $4::jsonb, $5)
+                RETURNING id
+                """,
+                user["id"],
+                plan_data.get("title", f"{exam_type} Prep Plan"),
+                f"AI-generated {exam_type} preparation plan",
+                json.dumps(plan_data),
+                exam_type,
+            )
+            await conn.close()
+            return str(plan_id) if plan_id else None
+        except Exception as e:
+            logger.error("Failed to save exam prep plan: %s", e)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Story 3.3: Org Content Upload Pipeline
+    # -------------------------------------------------------------------------
+
+    async def create_org_content_record(
+        self,
+        org_id: str,
+        clerk_user_id: str,
+        file_name: str,
+        s3_key: str,
+        file_type: str,
+        file_size_bytes: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Insert a new org_content row and return the record dict."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                INSERT INTO org_content (org_id, clerk_user_id, file_name, s3_key, file_type, file_size_bytes, status)
+                VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                RETURNING id, org_id, clerk_user_id, file_name, s3_key, file_type, file_size_bytes, status, uploaded_at, updated_at
+                """,
+                org_id,
+                clerk_user_id,
+                file_name,
+                s3_key,
+                file_type,
+                file_size_bytes,
+            )
+            await conn.close()
+            if not row:
+                return None
+            return {
+                "content_id": str(row["id"]),
+                "org_id": row["org_id"],
+                "clerk_user_id": row["clerk_user_id"],
+                "file_name": row["file_name"],
+                "s3_key": row["s3_key"],
+                "file_type": row["file_type"],
+                "file_size_bytes": row["file_size_bytes"],
+                "status": row["status"],
+                "uploaded_at": row["uploaded_at"].isoformat() if row.get("uploaded_at") else None,
+                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+                "teaching_plan_id": None,
+            }
+        except Exception as e:
+            logger.error("Failed to create org_content record: %s", e)
+            return None
+
+    async def get_org_content_library(self, org_id: str) -> List[Dict[str, Any]]:
+        """Return all org_content records for the org ordered by uploaded_at DESC."""
+        try:
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, clerk_user_id, file_name, file_type, status,
+                       file_size_bytes, teaching_plan_id, uploaded_at, updated_at
+                FROM org_content
+                WHERE org_id = $1
+                ORDER BY uploaded_at DESC
+                """,
+                org_id,
+            )
+            await conn.close()
+            out = []
+            for r in rows:
+                out.append({
+                    "content_id": str(r["id"]),
+                    "org_id": r["org_id"],
+                    "file_name": r["file_name"],
+                    "file_type": r["file_type"],
+                    "status": r["status"],
+                    "file_size_bytes": r["file_size_bytes"],
+                    "teaching_plan_id": str(r["teaching_plan_id"]) if r.get("teaching_plan_id") else None,
+                    "uploaded_at": r["uploaded_at"].isoformat() if r.get("uploaded_at") else None,
+                    "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+                })
+            return out
+        except Exception as e:
+            logger.error("Failed to get org content library: %s", e)
+            return []
+
+    async def update_org_content_status(self, content_id: str, status: str) -> bool:
+        """Update status of an org_content record."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute(
+                "UPDATE org_content SET status = $1, updated_at = NOW() WHERE id = $2::uuid",
+                status,
+                content_id,
+            )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error("Failed to update org_content status: %s", e)
+            return False
+
+    async def get_org_content_by_id(self, content_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single org_content record by id."""
+        try:
+            conn = await self.get_db_connection()
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, clerk_user_id, file_name, s3_key, file_type, status,
+                       file_size_bytes, teaching_plan_id, uploaded_at, updated_at
+                FROM org_content
+                WHERE id = $1::uuid
+                """,
+                content_id,
+            )
+            await conn.close()
+            if not row:
+                return None
+            return {
+                "content_id": str(row["id"]),
+                "org_id": row["org_id"],
+                "clerk_user_id": row["clerk_user_id"],
+                "file_name": row["file_name"],
+                "s3_key": row["s3_key"],
+                "file_type": row["file_type"],
+                "status": row["status"],
+                "file_size_bytes": row["file_size_bytes"],
+                "teaching_plan_id": str(row["teaching_plan_id"]) if row.get("teaching_plan_id") else None,
+                "uploaded_at": row["uploaded_at"].isoformat() if row.get("uploaded_at") else None,
+                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+            }
+        except Exception as e:
+            logger.error("Failed to get org_content by id: %s", e)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Story 3.4: AI Teaching Plan Generation
+    # -------------------------------------------------------------------------
+
+    async def update_org_content_plan_id(
+        self,
+        content_id: str,
+        plan_id: str,
+    ) -> bool:
+        """Link a teaching plan to an org_content record."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute(
+                """
+                UPDATE org_content
+                SET teaching_plan_id = $1::uuid, status = 'approved', updated_at = NOW()
+                WHERE id = $2::uuid
+                """,
+                plan_id,
+                content_id,
+            )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error("Failed to update org_content plan_id: %s", e)
+            return False
+
+    async def update_learning_plan_data(
+        self,
+        plan_id: str,
+        new_plan_data: Dict[str, Any],
+    ) -> bool:
+        """Overwrite plan_data JSONB for an existing learning_plans row (preserves progress)."""
+        try:
+            conn = await self.get_db_connection()
+            await conn.execute(
+                """
+                UPDATE learning_plans
+                SET plan_data = $1::jsonb, updated_at = NOW()
+                WHERE id = $2::uuid
+                """,
+                json.dumps(new_plan_data),
+                plan_id,
+            )
+            await conn.close()
+            return True
+        except Exception as e:
+            logger.error("Failed to update learning plan data: %s", e)
+            return False
+
+    async def save_org_teaching_plan(
+        self,
+        clerk_user_id: str,
+        title: str,
+        plan_data: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist an org-generated teaching plan as a learning_plans row. Returns plan id."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return None
+            conn = await self.get_db_connection()
+            plan_id = await conn.fetchval(
+                """
+                INSERT INTO learning_plans (user_id, title, summary, status, plan_data)
+                VALUES ($1::uuid, $2, $3, 'active', $4::jsonb)
+                RETURNING id
+                """,
+                user["id"],
+                title,
+                plan_data.get("description", f"AI-generated teaching plan: {title}"),
+                json.dumps(plan_data),
+            )
+            await conn.close()
+            return str(plan_id) if plan_id else None
+        except Exception as e:
+            logger.error("Failed to save org teaching plan: %s", e)
+            return None
+
+    async def get_org_courses(self, clerk_user_id: str) -> List[Dict[str, Any]]:
+        """Return all learning_plans whose plan_data contains source='org_content' for the user."""
+        try:
+            user = await self.get_user_by_clerk_id(clerk_user_id)
+            if not user or not user.get("id"):
+                return []
+            conn = await self.get_db_connection()
+            rows = await conn.fetch(
+                """
+                SELECT id, title, summary, plan_data, status,
+                       COALESCE(overall_progress, 0) AS overall_progress,
+                       created_at, updated_at
+                FROM learning_plans
+                WHERE user_id = $1::uuid
+                  AND plan_data->>'source' = 'org_content'
+                ORDER BY created_at DESC
+                """,
+                user["id"],
+            )
+            await conn.close()
+            out = []
+            for r in rows:
+                plan_data = r.get("plan_data")
+                if isinstance(plan_data, str):
+                    try:
+                        plan_data = json.loads(plan_data) if plan_data else {}
+                    except Exception:
+                        plan_data = {}
+                modules = plan_data.get("modules", []) if isinstance(plan_data, dict) else []
+                out.append({
+                    "plan_id": str(r["id"]),
+                    "title": r.get("title") or "",
+                    "description": r.get("summary") or "",
+                    "modules_count": len(modules),
+                    "overall_progress": int(r.get("overall_progress") or 0),
+                    "org_id": plan_data.get("org_id") if isinstance(plan_data, dict) else None,
+                })
+            return out
+        except Exception as e:
+            logger.error("Failed to get org courses: %s", e)
+            return []
+
+    # =========================================================================
+    # STORY 1.3: Corporate Org Admin & Employee Account Setup
+    # =========================================================================
+
+    async def _get_user_email(self, conn, clerk_user_id: str) -> str:
+        """Fetch the email for a user by clerk_user_id. Returns empty string if not found."""
+        return await conn.fetchval(
+            "SELECT email FROM users WHERE clerk_user_id = $1", clerk_user_id
+        ) or ""
+
+    async def create_org(
+        self, name: str, admin_clerk_user_id: str, seat_count: int, product_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """Create an org and insert the admin as an active org_member. Returns the org dict or None on error."""
+        try:
+            conn = await self.get_db_connection()
+            try:
+                org = await conn.fetchrow(
+                    """INSERT INTO orgs (name, admin_clerk_user_id, seat_count, product_type)
+                       VALUES ($1, $2, $3, $4) RETURNING *""",
+                    name, admin_clerk_user_id, seat_count, product_type,
+                )
+                admin_email = await self._get_user_email(conn, admin_clerk_user_id)
+                await conn.execute(
+                    """INSERT INTO org_members (org_id, clerk_user_id, role, invited_email, status)
+                       VALUES ($1, $2, 'admin', $3, 'active')""",
+                    org["id"], admin_clerk_user_id, admin_email,
+                )
+                return dict(org)
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error("Failed to create org: %s", e)
+            return None
+
+    async def invite_member(
+        self, org_id: str, invited_email: str, product_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """Insert a pending org_members row for the invited email. Returns the member dict or None."""
+        try:
+            conn = await self.get_db_connection()
+            try:
+                row = await conn.fetchrow(
+                    """INSERT INTO org_members (org_id, clerk_user_id, role, invited_email, status)
+                       VALUES ($1, NULL, 'member', $2, 'pending') RETURNING *""",
+                    org_id, invited_email,
+                )
+                return dict(row) if row else None
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error("Failed to invite member: %s", e)
+            return None
+
+    async def get_org_by_admin(self, admin_clerk_user_id: str) -> Optional[Dict[str, Any]]:
+        """Return the org row where admin_clerk_user_id matches, or None."""
+        try:
+            conn = await self.get_db_connection()
+            try:
+                row = await conn.fetchrow(
+                    "SELECT * FROM orgs WHERE admin_clerk_user_id = $1", admin_clerk_user_id
+                )
+                return dict(row) if row else None
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error("Failed to get org by admin: %s", e)
+            return None
+
+    async def get_org_membership(self, clerk_user_id: str) -> Optional[Dict[str, Any]]:
+        """Return the active org_members row joined with product_type from orgs, or None."""
+        try:
+            conn = await self.get_db_connection()
+            try:
+                row = await conn.fetchrow(
+                    """SELECT om.*, o.product_type
+                       FROM org_members om
+                       JOIN orgs o ON o.id = om.org_id
+                       WHERE om.clerk_user_id = $1 AND om.status = 'active'
+                       LIMIT 1""",
+                    clerk_user_id,
+                )
+                return dict(row) if row else None
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error("Failed to get org membership: %s", e)
+            return None
 
 
 # Example usage and testing

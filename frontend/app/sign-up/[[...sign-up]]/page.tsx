@@ -1,3 +1,4 @@
+// frontend/app/sign-up/[[...sign-up]]/page.tsx
 import { SignUp } from '@clerk/nextjs'
 
 type PageProps = {
@@ -20,7 +21,8 @@ export default async function SignUpPage({ params, searchParams }: PageProps) {
           <p className="text-gray-600">Create your account and start learning with AI</p>
         </div>
         
-        <SignUp 
+        <SignUp
+          afterSignUpUrl="/dashboard"
           appearance={{
             elements: {
               formButtonPrimary: "bg-gradient-to-r from-vedya-purple to-vedya-pink hover:from-vedya-purple/90 hover:to-vedya-pink/90",

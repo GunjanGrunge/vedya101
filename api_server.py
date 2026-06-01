@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 import asyncio
+import httpx
 import json
 import os
 import re
@@ -23,6 +24,20 @@ from user_service import UserService
 from ai_planning_agent import ai_planning_agent
 from diagram_utils import make_diagram_data_url
 import openai as openai_lib
+
+# Epic 5: Content Safety & Moderation
+from content_filter import (
+    SCHOOL_SAFE_SYSTEM_PROMPT,
+    filter_content,
+    check_org_content,
+    extract_text_from_pdf,
+    FilterResult,
+    ModerationResult,
+)
+from fastapi import BackgroundTasks
+
+# Product type for content filtering (school | corporate | vocational)
+PRODUCT_TYPE = os.getenv("NEXT_PUBLIC_APP_PRODUCT_TYPE", "school").strip().lower()
 
 # Helper function to ensure correct temperature for models
 def get_safe_temperature(model_name, default_temp=0.7):
@@ -51,6 +66,42 @@ app.add_middleware(
 agent_system = None
 user_service = None
 user_sessions = {}  # Simple in-memory session storage
+# user_sessions[clerk_user_id] shape (ephemeral, cleared on session-end):
+# {
+#   "proficiency_band": str | None,   # Story 2.1 — None until inferred
+#   "inference_signals": List[Dict],  # Story 2.1 — rolling, max 5
+#       signal dict: { "message_length": int, "is_correct": bool|None,
+#                      "is_clarifying": bool, "timestamp_ms": int }
+#   "signals": List[Dict],            # Story 2.2 — rolling adaptation signals, max 5
+#       signal dict: { "correct": bool|None, "response_time_ms": int,
+#                      "is_clarifying": bool, "turn": int }
+#   "turn_counter": int,              # Story 2.2
+#   "adaptation_direction": str,      # Story 2.2 — "simplify"|"advance"|"hold"
+#   "pinned_proficiency": str | None, # Story 2.3 — org-pinned band (overrides inference)
+#   "mastered_topics": List[str],     # Story 2.4
+#   "revisit_topics": List[str],      # Story 2.4
+#   "latest_assessment_score": int,   # Story 2.4
+#   "pending_assessment": dict | None,# Story 2.4
+#   # TODO Epic 6: adaptation state (proficiency_band, signals, adaptation_direction, turn_counter)
+#   # persists across language switches — cleared only on POST /users/session-end
+# }
+
+# ── Story 2.1: Proficiency band constants ─────────────────────────────────────
+PROFICIENCY_BANDS: List[str] = [
+    "Beginner", "Amateur", "Seasoned", "Professional", "Ultra Pro"
+]
+
+# ── Story 2.4: Band → difficulty mapping for assessments ─────────────────────
+BAND_TO_DIFFICULTY: Dict[str, str] = {
+    "Beginner":     "beginner",
+    "Amateur":      "beginner-intermediate",
+    "Seasoned":     "intermediate",
+    "Professional": "advanced",
+    "Ultra Pro":    "expert",
+}
+
+# ── Story 2.3: Valid proficiency bands (also exported for user_service) ──────
+VALID_PROFICIENCY_BANDS = PROFICIENCY_BANDS
 
 # Admin: only this email can access /admin/* and see admin dashboard
 ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or "souvikbasu098@gmail.com").strip().lower()
@@ -399,9 +450,24 @@ async def register_user_from_clerk(user_data: UserRegistrationData):
             email=user_data.email,
             name=user_data.name
         )
-        
+
+        # Story 1.3: if a pending org invite exists for this email, activate membership
+        if user_data.email:
+            try:
+                conn = await user_service.get_db_connection()
+                await conn.execute(
+                    """UPDATE org_members
+                       SET clerk_user_id = $1, status = 'active', updated_at = NOW()
+                       WHERE invited_email = $2 AND status = 'pending' AND clerk_user_id IS NULL""",
+                    user_data.clerk_user_id,
+                    user_data.email,
+                )
+                await conn.close()
+            except Exception as org_err:
+                print(f"Org member activation skipped: {org_err}")
+
         return UserResponse(**result)
-        
+
     except Exception as e:
         print(f"Error registering user: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to register user: {str(e)}")
@@ -498,6 +564,29 @@ async def save_onboarding(payload: OnboardingData):
     except Exception as e:
         print(f"Error saving onboarding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class SessionEndRequest(BaseModel):
+    clerk_user_id: str
+    duration_hours: float = 0.0
+
+@app.get("/users/freemium-status")
+async def get_freemium_status(clerk_user_id: str):
+    """Return freemium tier status and usage limits for the user."""
+    if not user_service:
+        raise HTTPException(status_code=503, detail="User service not ready")
+    result = await user_service.check_freemium_limits(clerk_user_id)
+    return result
+
+@app.post("/users/session-end")
+async def end_session(payload: SessionEndRequest):
+    """Record session end: increment session_hours_used for freemium users and clear ephemeral state."""
+    if not user_service:
+        raise HTTPException(status_code=503, detail="User service not ready")
+    # Clear in-memory session state
+    user_sessions.pop(payload.clerk_user_id, None)
+    if payload.duration_hours > 0:
+        await user_service.record_session_end(payload.clerk_user_id, payload.duration_hours)
+    return {"success": True}
 
 class ChatSessionCreate(BaseModel):
     clerk_user_id: str
@@ -1567,32 +1656,126 @@ async def teaching_chat(request: dict):
         stream = request.get('stream', False)
         image_base64 = request.get('image_base64')  # optional: base64 image for vision (sketch/upload)
         last_teacher_message = request.get('last_teacher_message', '')
-        
+        clerk_user_id: str = request.get('clerk_user_id', '')
+
+        # Story 2.1 / 2.2 — optional signal fields from client
+        is_correct: Optional[bool] = request.get('is_correct', None)
+        is_clarifying: bool = bool(request.get('is_clarifying', False))
+        response_time_ms: int = int(request.get('response_time_ms', 5000))
+
         print(f"📝 Teaching chat request: '{message[:60]}...' | Stream: {stream} | Image: {bool(image_base64)}")
-        
+
+        # ── Stories 2.1–2.4: per-user ephemeral session state ─────────────────
+        if clerk_user_id and clerk_user_id not in user_sessions:
+            user_sessions[clerk_user_id] = {
+                "proficiency_band": None,       # Story 2.1
+                "inference_signals": [],        # Story 2.1  max 5
+                "signals": [],                  # Story 2.2  max 5
+                "turn_counter": 0,              # Story 2.2
+                "adaptation_direction": "hold", # Story 2.2
+                "pinned_proficiency": None,     # Story 2.3
+                "mastered_topics": [],          # Story 2.4
+                "revisit_topics": [],           # Story 2.4
+                "latest_assessment_score": None,# Story 2.4
+                "pending_assessment": None,     # Story 2.4
+            }
+
+        sess = user_sessions.get(clerk_user_id, {}) if clerk_user_id else {}
+
+        # ── Story 2.3: load org-pinned proficiency once per session ──────────
+        if sess and sess.get("pinned_proficiency") is None and user_service and clerk_user_id:
+            try:
+                org_info = await user_service.get_user_org(clerk_user_id)
+                if org_info and org_info.get("pinned_proficiency"):
+                    sess["pinned_proficiency"] = org_info["pinned_proficiency"]
+                    sess["proficiency_band"] = org_info["pinned_proficiency"]
+            except Exception:
+                pass  # org lookup failure is non-fatal
+
+        # Resolve the teaching assistant agent once for the block below
+        _ta_agent = (
+            agent_system.agents.get('teaching_assistant')
+            if agent_system and hasattr(agent_system, 'agents')
+            else None
+        )
+
+        if sess and _ta_agent:
+            import time as _time
+            # ── Story 2.1: capture inference signal ──────────────────────────
+            inf_sig = {
+                "message_length": len(message),
+                "is_correct": is_correct,
+                "is_clarifying": is_clarifying,
+                "timestamp_ms": int(_time.time() * 1000),
+            }
+            inf_signals = sess.setdefault("inference_signals", [])
+            if len(inf_signals) >= 5:
+                inf_signals.pop(0)
+            inf_signals.append(inf_sig)
+
+            # ── Story 2.1: infer band once ≥3 signals (skip if pinned) ───────
+            if (sess.get("proficiency_band") is None
+                    and sess.get("pinned_proficiency") is None
+                    and len(inf_signals) >= 3):
+                sess["proficiency_band"] = _ta_agent.infer_proficiency_band(inf_signals)
+                print(f"🎯 Proficiency inferred: {sess['proficiency_band']} for {clerk_user_id}")
+
+            # ── Story 2.2: capture adaptation signal ─────────────────────────
+            sess["turn_counter"] = sess.get("turn_counter", 0) + 1
+            adap_sig = {
+                "correct": is_correct,
+                "response_time_ms": response_time_ms,
+                "is_clarifying": is_clarifying,
+                "turn": sess["turn_counter"],
+            }
+            adap_signals = sess.setdefault("signals", [])
+            if len(adap_signals) >= 5:
+                adap_signals.pop(0)
+            adap_signals.append(adap_sig)
+
+            # ── Story 2.2: compute and apply adaptation direction ─────────────
+            if len(adap_signals) >= 3:
+                adapt_result = _ta_agent.compute_adaptation_direction(
+                    adap_signals, sess.get("proficiency_band", "Amateur")
+                )
+                sess["adaptation_direction"] = adapt_result["direction"]
+                # Shift band only if not pinned by org (Story 2.3 guard)
+                if (adapt_result["direction"] != "hold"
+                        and sess.get("pinned_proficiency") is None
+                        and sess.get("proficiency_band") is not None):
+                    sess["proficiency_band"] = _ta_agent.shift_proficiency_band(
+                        sess["proficiency_band"], adapt_result["direction"]
+                    )
+
+        proficiency_band = sess.get("proficiency_band") if sess else None
+        adaptation_direction = sess.get("adaptation_direction", "hold") if sess else "hold"
+        is_pinned = bool(sess.get("pinned_proficiency")) if sess else False
+
         # Build session context
         session_context = {
             "subject": "Artificial Intelligence",
-            "module": "AI Fundamentals", 
+            "module": "AI Fundamentals",
             "learning_style": "Visual + Hands-on",
             "difficulty": "Intermediate",
-            "current_concept": current_concept
+            "current_concept": current_concept,
+            "proficiency_band": proficiency_band,     # Story 2.1
+            "adaptation_direction": adaptation_direction,  # Story 2.2
         }
         if last_teacher_message and image_base64 and ("marked the area" in message.lower() or "is this correct" in message.lower()):
             session_context["evaluating_user_pointing"] = True
             session_context["pointing_question"] = last_teacher_message
-        
+
         # Use the TeachingAssistant agent
         if agent_system and hasattr(agent_system, 'agents') and 'teaching_assistant' in agent_system.agents:
             teaching_assistant = agent_system.agents['teaching_assistant']
-            
+
             if stream:
                 # Return streaming response
                 async def generate_stream():
                     async for chunk in teaching_assistant.stream_teaching_chat(message, session_context):
                         yield f"data: {json.dumps(chunk)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                
+
                 return StreamingResponse(
                     generate_stream(),
                     media_type="text/event-stream",
@@ -1620,7 +1803,40 @@ async def teaching_chat(request: dict):
                     message, session_context, image_base64=image_base64
                 )
                 response_text = result.get("response", "") if isinstance(result, dict) else str(result or "")
-                
+
+                # === Epic 5.1: Content filter for School product ===
+                if PRODUCT_TYPE == "school" and response_text:
+                    cf_enabled_str = await user_service.get_app_setting("content_filter_enabled")
+                    cf_enabled = (cf_enabled_str or "true").lower() != "false"
+                    filter_result = await filter_content(response_text, PRODUCT_TYPE, cf_enabled)
+                    if not filter_result.safe:
+                        # Attempt one regeneration with explicit safety constraint
+                        cats_str = ", ".join(filter_result.flagged_categories)
+                        retry_message = (
+                            f"{message}\n\n"
+                            f"[SYSTEM: Your previous response was flagged. "
+                            f"Please regenerate avoiding: {cats_str}.]"
+                        )
+                        retry_result = await teaching_assistant.handle_teaching_chat(
+                            retry_message, session_context, image_base64=None
+                        )
+                        retry_text = retry_result.get("response", "") if isinstance(retry_result, dict) else str(retry_result or "")
+                        retry_filter = await filter_content(retry_text, PRODUCT_TYPE, cf_enabled)
+                        if retry_filter.safe and retry_text:
+                            response_text = retry_text
+                            if isinstance(result, dict):
+                                result["response"] = retry_text
+                        else:
+                            # Both attempts flagged — return safe fallback
+                            fallback = (
+                                "I'm unable to provide content on this topic. "
+                                "Let's continue with the lesson on a different aspect."
+                            )
+                            response_text = fallback
+                            if isinstance(result, dict):
+                                result["response"] = fallback
+                # === End Epic 5.1 filter ===
+
                 # Only generate image when explicitly needed: agent flag, user asked for one, or response says "here's a visual/diagram"
                 message_lower = (message or "").lower()
                 response_lower = (response_text or "").lower()
@@ -1879,14 +2095,34 @@ async def _generate_dalle_diagram(concept: str, subject: str, diagram_type: str)
 
 @app.post("/teaching/generate-diagram")
 async def generate_teaching_diagram(request: dict):
-    """Generate supervised educational diagrams."""
+    """Generate supervised educational diagrams.
+
+    Accepts an optional 'format' field:
+      - 'image_url' (default): returns diagram_url (existing behaviour)
+      - 'excalidraw': returns Excalidraw elements JSON array instead of an image URL
+    """
     try:
         concept = request.get('concept', '')
         diagram_type = request.get('type', 'concept_illustration')
         subject = request.get('subject', 'General')
         supervised = request.get('supervised', True)
-        
-        print(f"📊 Diagram generation request: {concept} ({diagram_type}) - {subject}")
+        fmt = request.get('format', 'image_url')
+
+        print(f"📊 Diagram generation request: {concept} ({diagram_type}) - {subject} [format={fmt}]")
+
+        # ── Excalidraw format branch ─────────────────────────────────────────
+        if fmt == 'excalidraw':
+            from excalidraw_utils import generate_excalidraw_elements  # noqa: WPS433
+            elements = await generate_excalidraw_elements(concept, subject, diagram_type)
+            print(f"✅ Generated Excalidraw diagram with {len(elements)} elements for: {concept}")
+            return {
+                "success": True,
+                "format": "excalidraw",
+                "elements": elements,
+                "concept": concept,
+                "diagram_type": diagram_type,
+            }
+        # ── Image URL format (original behaviour below) ──────────────────────
         
         # Use ImageGenerationAssistant with supervision if available
         if agent_system and hasattr(agent_system, 'agents') and 'image_generation' in agent_system.agents:
@@ -2296,6 +2532,102 @@ async def admin_grant_achievement(payload: GrantAchievementPayload):
     except Exception as e:
         print(f"Error granting achievement: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# STORY 1.3: Corporate Org Admin & Employee Account Setup
+# =============================================================================
+
+async def send_clerk_invitation(email: str) -> None:
+    """Send a Clerk invitation email via the Clerk REST API."""
+    secret_key = os.environ.get("CLERK_SECRET_KEY")
+    if not secret_key:
+        raise HTTPException(status_code=500, detail="Clerk secret key not configured")
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.clerk.com/v1/invitations",
+            headers={"Authorization": f"Bearer {secret_key}"},
+            json={"email_address": email},
+        )
+        if resp.status_code not in (200, 201):
+            raise HTTPException(status_code=502, detail="Failed to send Clerk invitation")
+
+
+class OrgRegisterRequest(BaseModel):
+    admin_clerk_user_id: str
+    org_name: str
+    seat_count: int
+    product_type: str = "corporate"
+
+
+class OrgInviteRequest(BaseModel):
+    org_id: str
+    invited_email: str
+
+
+@app.post("/orgs/register")
+async def register_org(payload: OrgRegisterRequest):
+    """Register a new corporate or vocational org and return the created org record."""
+    if payload.product_type not in ("corporate", "vocational"):
+        raise HTTPException(status_code=422, detail="product_type must be 'corporate' or 'vocational'")
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    org = await user_service.create_org(
+        name=payload.org_name,
+        admin_clerk_user_id=payload.admin_clerk_user_id,
+        seat_count=payload.seat_count,
+        product_type=payload.product_type,
+    )
+    if org is None:
+        raise HTTPException(status_code=500, detail="Failed to create organisation")
+    # Serialise UUID/datetime fields
+    org = {k: (str(v) if v is not None and not isinstance(v, (str, int, float, bool)) else v)
+           for k, v in org.items()}
+    return {"org": org, "message": "Organisation registered successfully"}
+
+
+@app.post("/orgs/invite")
+async def invite_org_member(payload: OrgInviteRequest):
+    """Invite an employee to a Corporate or Vocational org and send a Clerk invitation email."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    org = await user_service.get_org(payload.org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    member = await user_service.invite_member(
+        org_id=payload.org_id,
+        invited_email=payload.invited_email,
+        product_type=org.get("product_type", "corporate"),
+    )
+    if member is None:
+        raise HTTPException(status_code=500, detail="Failed to create invitation record")
+    await send_clerk_invitation(payload.invited_email)
+    member = {k: (str(v) if v is not None and not isinstance(v, (str, int, float, bool)) else v)
+              for k, v in member.items()}
+    return {"member": member, "message": "Invitation sent"}
+
+
+@app.get("/orgs/me")
+async def get_my_org(clerk_user_id: str):
+    """Return the org where clerk_user_id is the admin, or {'org': null} if not found."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    org = await user_service.get_org_by_admin(clerk_user_id)
+    if org:
+        org = {k: (str(v) if v is not None and not isinstance(v, (str, int, float, bool)) else v)
+               for k, v in org.items()}
+    return {"org": org}
+
+
+@app.get("/users/product-context")
+async def get_user_product_context(clerk_user_id: str):
+    """Return product_type for the user based on their org membership, or null."""
+    if not user_service:
+        raise HTTPException(status_code=500, detail="User service not initialized")
+    membership = await user_service.get_org_membership(clerk_user_id)
+    if membership:
+        return {"product_type": membership.get("product_type")}
+    return {"product_type": None}
 
 
 if __name__ == "__main__":

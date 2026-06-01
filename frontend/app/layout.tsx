@@ -1,12 +1,11 @@
 import type { Metadata } from 'next'
 import { Inter, Poppins } from 'next/font/google'
-import { ClerkProvider } from '@clerk/nextjs'
 import '../styles/globals.css'
 import 'bootstrap-icons/font/bootstrap-icons.css'
 import LenisProvider from '../components/LenisProvider'
 import OnboardingGate from '../components/OnboardingGate'
 import ReduxProvider from '../components/ReduxProvider'
-import SessionLifecycle from '../components/SessionLifecycle'
+import ConditionalClerkProvider from '../components/ConditionalClerkProvider'
 
 const inter = Inter({ subsets: ['latin'] })
 const poppins = Poppins({ 
@@ -44,7 +43,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider afterSignOutUrl="/sign-in">
+    <ConditionalClerkProvider>
       <html lang="en">
         <head>
           <link
@@ -63,12 +62,11 @@ export default function RootLayout({
               <div className="min-h-screen">
                 {children}
                 <OnboardingGate />
-                <SessionLifecycle />
               </div>
             </LenisProvider>
           </ReduxProvider>
         </body>
       </html>
-    </ClerkProvider>
+    </ConditionalClerkProvider>
   )
 }
